@@ -5,6 +5,8 @@
 # (SESSION_SECRET, TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, BLOB_READ_WRITE_TOKEN, CRON_SECRET, BACKGROUND_JOBS ...).
 # Tugagach SECRETS_FILE o‘chiriladi.
 set -euo pipefail
+# Sirlar faylini yozishdagi `umask 077` meros qolsa apt kalitlari / nginx fayllari o‘qilmaydi
+umask 022
 
 SECRETS_FILE="${SECRETS_FILE:?SECRETS_FILE kerak}"
 HR_DOMAIN="${HR_DOMAIN:?HR_DOMAIN kerak}"
