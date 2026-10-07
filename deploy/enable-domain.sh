@@ -98,5 +98,5 @@ curl -s --max-time 60 -X POST http://127.0.0.1:8080/api/telegram/setup \
   -H "Authorization: Bearer $secret" -H "Content-Type: application/json" -d '{}' \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print('    ok=%s webhook=%s' % (d.get('ok'), d.get('webhookUrl') or d.get('error'))); sys.exit(0 if d.get('ok') else 1)"
 
-rm -f "$CRON_FILE"
+grep -q "HR_DOMAIN=$HR_DOMAIN " "$CRON_FILE" 2>/dev/null && rm -f "$CRON_FILE"
 log "Tayyor: https://$HR_DOMAIN"
