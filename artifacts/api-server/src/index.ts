@@ -1,0 +1,64 @@
+import "./load-env";
+import app from "./app";
+import { logger } from "./lib/logger";
+import { startVacancyReminderJob } from "./jobs/vacancy-reminders";
+import { startDavomatReminderJob } from "./jobs/davomat-reminders";
+import { startTaskReminderJob } from "./jobs/task-reminders";
+import { startCoordinatorPresenceJob } from "./jobs/coordinator-presence";
+import { startReviziyaAlertJob } from "./jobs/reviziya-alerts";
+import { startNotifTestJob } from "./jobs/notif-test";
+import { startFilialBotPollingJob } from "./jobs/filial-bot-polling";
+import { startFilialRecruiterMonitorJob } from "./jobs/filial-recruiter-monitor";
+import { startJavobOlishEscalateJob } from "./jobs/javob-olish-escalate";
+import { startOpsTicketEscalateJob } from "./jobs/ops-ticket-escalate";
+import { startDismissedSweepJob } from "./jobs/dismissed-sweep";
+import { startZonePresenceJob } from "./jobs/zone-presence";
+import { startDisciplineScanJob } from "./jobs/discipline-scan";
+
+/** Vercel sets VERCEL=1 — serverless uses exported app, no listen. */
+const isVercel = process.env.VERCEL === "1" || process.env.VERCEL === "true";
+
+if (!isVercel) {
+  const rawPort = process.env["PORT"];
+
+  if (!rawPort) {
+    throw new Error(
+      "PORT environment variable is required but was not provided.",
+    );
+  }
+
+  const port = Number(rawPort);
+
+  if (Number.isNaN(port) || port <= 0) {
+    throw new Error(`Invalid PORT value: "${rawPort}"`);
+  }
+
+  app.listen(port, (err) => {
+    if (err) {
+      logger.error({ err }, "Error listening on port");
+      process.exit(1);
+    }
+
+    logger.info({ port }, "Server listening");
+    // Sinov serveri (prod bazaning nusxasi) haqiqiy xodimlarga eslatma yubormasin
+    if (process.env.BACKGROUND_JOBS === "0") {
+      logger.warn("BACKGROUND_JOBS=0 — fon ishlari o‘chirilgan");
+      return;
+    }
+    startVacancyReminderJob();
+    startDavomatReminderJob();
+    startTaskReminderJob();
+    startCoordinatorPresenceJob();
+    startReviziyaAlertJob();
+    startNotifTestJob();
+    startFilialBotPollingJob();
+    startFilialRecruiterMonitorJob();
+    startJavobOlishEscalateJob();
+    startOpsTicketEscalateJob();
+    startDismissedSweepJob();
+    startZonePresenceJob();
+    startDisciplineScanJob();
+  });
+}
+
+export default app;

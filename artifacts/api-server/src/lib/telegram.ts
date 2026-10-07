@@ -1,0 +1,435 @@
+import crypto from "node:crypto";
+
+const TG_API = "https://api.telegram.org";
+
+export type TelegramUser = {
+  id: number;
+  is_bot?: boolean;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  language_code?: string;
+};
+
+export type TelegramChat = {
+  id: number;
+  type: string;
+  title?: string;
+  username?: string;
+};
+
+export type TelegramPhotoSize = {
+  file_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+};
+
+export type TelegramMessageEntity = {
+  type: string;
+  offset: number;
+  length: number;
+};
+
+export type TelegramMessage = {
+  message_id: number;
+  from?: TelegramUser;
+  chat: TelegramChat;
+  text?: string;
+  caption?: string;
+  entities?: TelegramMessageEntity[];
+  caption_entities?: TelegramMessageEntity[];
+  photo?: TelegramPhotoSize[];
+  document?: { file_id: string; mime_type?: string; file_name?: string; file_size?: number };
+  reply_to_message?: TelegramMessage;
+  date: number;
+};
+
+export type TelegramCallbackQuery = {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+};
+
+export type TelegramUpdate = {
+  update_id: number;
+  message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+};
+
+export type InlineKeyboardButton =
+  | { text: string; web_app: { url: string } }
+  | { text: string; callback_data: string }
+  | { text: string; url: string };
+
+function botToken(): string | null {
+  const t = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  return t || null;
+}
+
+export function isTelegramConfigured(): boolean {
+  return !!botToken();
+}
+
+export function publicAppUrl(): string {
+  const raw =
+    process.env.PUBLIC_APP_URL?.trim() ||
+    process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim() ||
+    process.env.VERCEL_URL?.trim() ||
+    "";
+  if (!raw) return "";
+  const withProto = raw.startsWith("http") ? raw : `https://${raw}`;
+  return withProto.replace(/\/$/, "");
+}
+
+class TelegramApiError extends Error {}
+
+const RETRY_DELAYS_MS = [700, 2_000, 5_000];
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** VPS → api.telegram.org ulanishi ba’zan uziladi: tarmoq xatosi, 429 va 5xx da qayta urinadi */
+async function tgRequest<T>(method: string, init: () => RequestInit): Promise<T> {
+  const token = botToken();
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN sozlanmagan");
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(`${TG_API}/bot${token}/${method}`, {
+        ...init(),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      const data = (await res.json()) as {
+        ok: boolean;
+        description?: string;
+        result?: T;
+        parameters?: { retry_after?: number };
+      };
+      if (data.ok) return data.result as T;
+      const retryAfter = Number(data.parameters?.retry_after) || 0;
+      if ((res.status === 429 || res.status >= 500) && attempt < RETRY_DELAYS_MS.length) {
+        await sleep(retryAfter ? Math.min(retryAfter, 30) * 1000 : RETRY_DELAYS_MS[attempt]!);
+        continue;
+      }
+      throw new TelegramApiError(data.description || `Telegram API xato: ${method}`);
+    } catch (err) {
+      if (err instanceof TelegramApiError || attempt >= RETRY_DELAYS_MS.length) throw err;
+      await sleep(RETRY_DELAYS_MS[attempt]!);
+    }
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function tgCall<T = unknown>(method: string, body: Record<string, unknown>): Promise<T> {
+  const json = JSON.stringify(body);
+  return tgRequest<T>(method, () => ({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: json,
+  }));
+}
+
+export async function sendMessage(
+  chatId: number | string,
+  text: string,
+  opts?: {
+    parse_mode?: "HTML" | "Markdown";
+    reply_markup?: { inline_keyboard: InlineKeyboardButton[][] };
+    disable_web_page_preview?: boolean;
+    reply_to_message_id?: number;
+  },
+) {
+  return tgCall<TelegramMessage>("sendMessage", {
+    chat_id: chatId,
+    text,
+    parse_mode: opts?.parse_mode ?? "HTML",
+    reply_markup: opts?.reply_markup,
+    disable_web_page_preview: opts?.disable_web_page_preview ?? true,
+    reply_parameters: opts?.reply_to_message_id
+      ? { message_id: opts.reply_to_message_id, allow_sending_without_reply: true }
+      : undefined,
+  });
+}
+
+export async function deleteMessage(chatId: number | string, messageId: number) {
+  return tgCall<boolean>("deleteMessage", { chat_id: chatId, message_id: messageId });
+}
+
+/** Faylni Telegram chatga yuborish (private chat_id = telegram user id) */
+export async function sendDocument(
+  chatId: number | string,
+  file: Buffer,
+  filename: string,
+  opts?: { mimeType?: string; caption?: string },
+) {
+  if (!botToken()) throw new Error("TELEGRAM_BOT_TOKEN sozlanmagan");
+  if (!file?.length) throw new Error("Fayl bo‘sh");
+
+  const safeName = String(filename || "fayl")
+    .replace(/[/\\]/g, "_")
+    .slice(0, 120);
+  const blob = new Blob([new Uint8Array(file)], {
+    type: opts?.mimeType || "application/octet-stream",
+  });
+  const result = await tgRequest<unknown>("sendDocument", () => {
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("document", blob, safeName);
+    if (opts?.caption) form.append("caption", opts.caption.slice(0, 1024));
+    return { method: "POST", body: form };
+  });
+  return { ok: true as const, result };
+}
+
+export async function answerCallbackQuery(id: string, text?: string) {
+  return tgCall("answerCallbackQuery", {
+    callback_query_id: id,
+    text: text || undefined,
+  });
+}
+
+export async function getMe() {
+  return tgCall<{ id: number; username?: string; first_name?: string }>("getMe", {});
+}
+
+export async function setWebhook(url: string, secret?: string) {
+  return tgCall("setWebhook", {
+    url,
+    secret_token: secret || undefined,
+    allowed_updates: ["message", "callback_query"],
+    drop_pending_updates: true,
+  });
+}
+
+export async function getWebhookInfo() {
+  return tgCall<{
+    url: string;
+    has_custom_certificate: boolean;
+    pending_update_count: number;
+    last_error_message?: string;
+  }>("getWebhookInfo", {});
+}
+
+export async function setMyCommands(
+  commands: Array<{ command: string; description: string }>,
+) {
+  return tgCall("setMyCommands", { commands });
+}
+
+/** Chatdagi «Menyu» o‘rniga Mini App tugmasi (barcha foydalanuvchilar uchun). */
+export async function setMiniAppMenuButton(text: string, url: string) {
+  return tgCall("setChatMenuButton", {
+    menu_button: { type: "web_app", text, web_app: { url } },
+  });
+}
+
+export function newAuthToken(): string {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+export function verifyWebhookSecret(header: string | undefined): boolean {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
+  if (!secret) return true;
+  return header === secret;
+}
+
+/** Telegram Mini App initData — WebApp ochilganda doimiy kirish */
+export function verifyTelegramInitData(initData: string): {
+  user: TelegramUser;
+  authDate: number;
+} | null {
+  const token = botToken();
+  if (!token || !initData?.trim()) return null;
+
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+
+  const entries: [string, string][] = [];
+  params.forEach((value, key) => {
+    if (key !== "hash") entries.push([key, value]);
+  });
+  entries.sort(([a], [b]) => a.localeCompare(b));
+  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join("\n");
+
+  const secretKey = crypto.createHmac("sha256", "WebAppData").update(token).digest();
+  const calculatedHash = crypto
+    .createHmac("sha256", secretKey)
+    .update(dataCheckString)
+    .digest("hex");
+
+  if (calculatedHash !== hash) return null;
+
+  const authDate = Number(params.get("auth_date") || 0);
+  const maxAgeSec = 7 * 24 * 60 * 60;
+  if (!authDate || Date.now() / 1000 - authDate > maxAgeSec) return null;
+
+  const userRaw = params.get("user");
+  if (!userRaw) return null;
+  try {
+    const user = JSON.parse(userRaw) as TelegramUser;
+    if (!user?.id) return null;
+    return { user, authDate };
+  } catch {
+    return null;
+  }
+}
+
+/** Login/parol matnini ajratib olish — bir necha namuna format */
+export function parseLoginPassword(text: string): { login: string; password: string } | null {
+  const compact = (v: string) => v.replace(/[\s\u00a0\u200b\uFEFF]+/g, "");
+  const t = text.trim().replace(/\u00a0/g, " ");
+  if (!t) return null;
+
+  const labeled =
+    /(?:^|\n)\s*(?:login|логин)\s*[:=]\s*(\S+)\s*(?:\n|\s)+(?:parol|password|пароль|pass)\s*[:=]\s*(\S+)/i.exec(
+      t,
+    );
+  if (labeled?.[1] && labeled[2]) {
+    const login = compact(labeled[1]);
+    const password = compact(labeled[2]);
+    if (login && password) return { login, password };
+  }
+
+  const lines = t
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 2) {
+    const a = compact(lines[0]!.replace(/^(?:login|логин)\s*[:=]\s*/i, ""));
+    const b = compact(lines[1]!.replace(/^(?:parol|password|пароль|pass)\s*[:=]\s*/i, ""));
+    if (a && b) return { login: a, password: b };
+  }
+
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    const login = compact(parts[0]);
+    const password = compact(parts[1]);
+    if (login && password) return { login, password };
+  }
+
+  return null;
+}
+
+export const ROLE_LABEL_UZ: Record<string, string> = {
+  admin: "Admin",
+  hr: "HR",
+  hr_direktor: "HR Direktor",
+  hr_kadr_rahbar: "HR kadr b/m",
+  hr_auditor: "HR Auditor",
+  hr_menejer: "HR Menejer",
+  recruiter: "Rekruter",
+  trainer: "Trener",
+  mentor: "Mentor",
+  director: "Direktor",
+  department_head: "Bo‘lim boshlig‘i",
+  mudir: "Mudir",
+  koordinator: "Koordinator",
+  texnik: "Texnik",
+  texnik_rahbar: "Texnik bo‘limi rahbari",
+  it: "AyTi mutaxassisi",
+  it_rahbar: "AyTi bo‘lim boshlig‘i",
+  it_dasturchi: "Dasturchi",
+  it_tarmoq: "Tarmoq administratori",
+  ombor: "Ombor",
+  sb: "SB operatori",
+  sb_boshliq: "SB bo‘limi boshlig‘i",
+  farmasevt: "Farmasevt",
+  stajyor: "Stajyor",
+  moliya: "Moliyachi",
+  revizor: "Revizor-yig‘uvchi",
+  reviziya_rahbar: "Reviziya bo‘limi rahbari",
+  kassir: "Kassir",
+  yurist: "Yurist",
+  komunalniy: "Kommunal",
+  farrosh: "Farrosh",
+  mexanik: "Mexanik",
+  direktor_yordamchisi: "Direktor yordamchisi",
+};
+
+export function statusLabelUz(status?: string | null): string {
+  switch (status) {
+    case "active":
+      return "Faol";
+    case "on_leave":
+      return "Tatilda";
+    case "vacant":
+      return "Bo‘sh";
+    case "terminated":
+      return "Tugatilgan";
+    case "inactive":
+      return "Nofaol";
+    case "blocked":
+      return "Bloklangan";
+    default:
+      return status || "Noma’lum";
+  }
+}
+
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Telegram Mini App kirish havolasi (token ixtiyoriy) */
+export function miniAppEntryUrl(opts?: { next?: string; token?: string }): string | null {
+  const base = publicAppUrl();
+  if (!base) return null;
+  const u = new URL(`${base}/tg`);
+  if (opts?.next) u.searchParams.set("next", opts.next);
+  if (opts?.token) u.searchParams.set("token", opts.token);
+  u.searchParams.set("fresh", "1");
+  return u.toString();
+}
+
+export function davomatMiniAppKeyboard(): { inline_keyboard: InlineKeyboardButton[][] } | undefined {
+  const url = miniAppEntryUrl({ next: "davomat-face" });
+  if (!url) return undefined;
+  return {
+    inline_keyboard: [[{ text: "📋 Davomat — Face ID", web_app: { url } }]],
+  };
+}
+
+/**
+ * Bildirishnoma uchun ochish tugmasi.
+ * linkPath: "/vazifalar" yoki "vazifalar" yoki to‘liq URL.
+ */
+export function notificationOpenKeyboard(
+  linkPath?: string | null,
+  buttonText = "Ochish",
+): { inline_keyboard: InlineKeyboardButton[][] } | undefined {
+  const raw = String(linkPath || "").trim();
+  if (!raw) return undefined;
+
+  if (raw.includes("davomat")) {
+    return davomatMiniAppKeyboard();
+  }
+
+  const base = publicAppUrl();
+  let absolute = raw;
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    absolute = raw;
+  } else if (base) {
+    absolute = `${base}${raw.startsWith("/") ? raw : `/${raw}`}`;
+  } else {
+    return undefined;
+  }
+
+  // Mini App ichida ochish (Telegram)
+  const next = raw.replace(/^\//, "").split("#")[0];
+  const webAppUrl = miniAppEntryUrl({ next: next || "dashboard" });
+  if (webAppUrl) {
+    return {
+      inline_keyboard: [[{ text: buttonText, web_app: { url: webAppUrl } }]],
+    };
+  }
+
+  return {
+    inline_keyboard: [[{ text: buttonText, url: absolute }]],
+  };
+}

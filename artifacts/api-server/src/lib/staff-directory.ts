@@ -1,0 +1,521 @@
+/**
+ * Faol xodimlar — foydalanuvchilar (users) asosida, employee kartasi bilan.
+ * Xodimlar, Oylik va Hisob-kitob sahifalari shu yuklovchidan foydalanadi.
+ */
+import { and, asc, eq, inArray, isNull, ne, notInArray, or } from "drizzle-orm";
+import {
+  db,
+  departmentsTable,
+  employeesTable,
+  faceProfilesTable,
+  usersTable,
+} from "@workspace/db";
+import { ensureEmployeeForNewUser } from "./user-employee-sync";
+import { formatPersonName } from "./person-name";
+
+export type StaffRow = {
+  id: number;
+  fullName: string;
+  position: string;
+  departmentId: number;
+  mentorId: number | null;
+  hiredAt: string;
+  candidateId: number | null;
+  orgRole: string | null;
+  reportsToId: number | null;
+  location: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  shiftType: string | null;
+  shiftLabel: string | null;
+  employmentStatus: string | null;
+  userId: number | null;
+  photoUrl: string | null;
+  login: string | null;
+  phone: string | null;
+  userStatus: string | null;
+  userRole: string | null;
+  fixedSalary: number;
+  bonusPercent: number;
+  branchNo: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+const ROLE_POSITION: Record<string, string> = {
+  admin: "Admin",
+  director: "Direktor",
+  asoschi: "Asoschi",
+  department_head: "Bo‘lim boshlig‘i",
+  hr_direktor: "HR Direktor",
+  hr_kadr_rahbar: "HR kadr b/m",
+  hr_menejer: "HR Menejer",
+  hr_auditor: "HR Auditor",
+  recruiter: "Rekruter",
+  trainer: "Trener",
+  mentor: "Mentor",
+  mudir: "Mudir",
+  koordinator: "Koordinator",
+  texnik: "Texnik",
+  texnik_rahbar: "Texnik bo‘limi rahbari",
+  it: "AyTi mutaxassisi",
+  it_rahbar: "AyTi bo‘lim boshlig‘i",
+  it_dasturchi: "Dasturchi",
+  it_tarmoq: "Tarmoq administratori",
+  ombor: "Ombor",
+  farmasevt: "Farmasevt",
+  stajyor: "Stajyor",
+  moliya: "Moliyachi",
+  revizor: "Revizor-yig‘uvchi",
+  reviziya_rahbar: "Reviziya bo‘limi rahbari",
+  sb: "SB operatori",
+  sb_boshliq: "SB bo‘limi boshlig‘i",
+};
+
+function orgRoleFromUserRole(role?: string | null): string | null {
+  if (role === "mudir") return "manager";
+  if (role === "farmasevt") return "pharmacist";
+  if (role === "stajyor") return "intern";
+  if (role === "koordinator") return "coordinator";
+  return null;
+}
+
+const EMP_LIST_SELECT = {
+  id: employeesTable.id,
+  fullName: employeesTable.fullName,
+  position: employeesTable.position,
+  departmentId: employeesTable.departmentId,
+  mentorId: employeesTable.mentorId,
+  hiredAt: employeesTable.hiredAt,
+  candidateId: employeesTable.candidateId,
+  orgRole: employeesTable.orgRole,
+  reportsToId: employeesTable.reportsToId,
+  location: employeesTable.location,
+  latitude: employeesTable.latitude,
+  longitude: employeesTable.longitude,
+  shiftType: employeesTable.shiftType,
+  shiftLabel: employeesTable.shiftLabel,
+  employmentStatus: employeesTable.employmentStatus,
+  userId: employeesTable.userId,
+  photoUrl: employeesTable.photoUrl,
+  fixedSalary: employeesTable.fixedSalary,
+  bonusPercent: employeesTable.bonusPercent,
+  branchNo: employeesTable.branchNo,
+  createdAt: employeesTable.createdAt,
+  updatedAt: employeesTable.updatedAt,
+};
+
+const EMP_CORE_SELECT = {
+  id: employeesTable.id,
+  fullName: employeesTable.fullName,
+  position: employeesTable.position,
+  departmentId: employeesTable.departmentId,
+  mentorId: employeesTable.mentorId,
+  hiredAt: employeesTable.hiredAt,
+  candidateId: employeesTable.candidateId,
+  createdAt: employeesTable.createdAt,
+  updatedAt: employeesTable.updatedAt,
+};
+
+export function normalizeUserStatus(status: string | null | undefined): string {
+  if (!status || status === "inactive" || status === "blocked") return "vacant";
+  return status;
+}
+
+export function isActiveStaffUser(status: string | null | undefined): boolean {
+  return normalizeUserStatus(status) === "active";
+}
+
+export function employmentFromUserStatus(status: string | null | undefined): string {
+  const s = normalizeUserStatus(status);
+  if (s === "active") return "working";
+  if (s === "on_leave") return "on_leave";
+  if (s === "terminated") return "dismissed";
+  return "dismissed";
+}
+
+export function userStatusFromEmployment(status: string): string {
+  if (status === "working" || status === "new") return "active";
+  if (status === "on_leave") return "on_leave";
+  if (status === "dismissed" || status === "closed") return "terminated";
+  return "vacant";
+}
+
+const PHARMACY_USER_ROLE_SET = new Set(["mudir", "farmasevt", "stajyor", "koordinator"]);
+const PHARMACY_ORG_ROLE_SET = new Set(["manager", "pharmacist", "intern", "supervisor", "coordinator"]);
+
+/** Xodimlar bo‘limidagi Ofis / Dorixona ajratish. Boshqa sahifalar shu qoidani ishlatadi. */
+export function isPharmacyStaffRow(e: {
+  userRole?: string | null;
+  orgRole?: string | null;
+  position?: string | null;
+  departmentName?: string | null;
+}): boolean {
+  const role = String(e.userRole || "").trim().toLowerCase();
+  const org = String(e.orgRole || "").trim().toLowerCase();
+  const pos = String(e.position || "").trim().toLowerCase();
+  const dept = String(e.departmentName || "").trim().toLowerCase();
+  if (PHARMACY_USER_ROLE_SET.has(role)) return true;
+  if (PHARMACY_ORG_ROLE_SET.has(org)) return true;
+  if (/filial\s*mudir|farmasevt|stajyor|stajor/.test(pos)) return true;
+  if (/(farmasevt|dorixona|apteka)/.test(dept) && /(mudir|farmasevt|stajyor)/.test(`${pos} ${role}`)) return true;
+  return false;
+}
+
+/** Bo‘shatilgan / yopilgan — davomat va «Faol xodimlar»dan chiqariladi */
+export function isDismissedEmploymentStatus(status: string | null | undefined): boolean {
+  const s = String(status || "").trim().toLowerCase();
+  return s === "dismissed" || s === "closed";
+}
+
+function staffPhotoUrl(userId: number, hasFace: boolean, employeePhoto: string | null): string | null {
+  if (hasFace) return `/api/staff/${userId}/avatar`;
+  return employeePhoto?.trim() || null;
+}
+
+const orgRank = (org: string | null) =>
+  ({ manager: 5, coordinator: 4, pharmacist: 3, supervisor: 2, intern: 1 }[org || ""] ?? 0);
+
+/** Foydalanuvchilar bazasidan xodimlar — Xodimlar / Oylik / Hisob-kitob uchun yagona manba */
+export async function loadStaffFromUsers(
+  group: "active" | "other" = "active",
+  opts?: { skipFacePhotos?: boolean },
+): Promise<StaffRow[]> {
+  const users = await db
+    .select({
+      id: usersTable.id,
+      fullName: usersTable.fullName,
+      phone: usersTable.phone,
+      login: usersTable.login,
+      role: usersTable.role,
+      departmentId: usersTable.departmentId,
+      status: usersTable.status,
+      createdAt: usersTable.createdAt,
+    })
+    .from(usersTable)
+    .where(ne(usersTable.role, "admin"))
+    .orderBy(asc(usersTable.fullName));
+
+  // «Tugatilgan» — faqat Bo‘shatilganlarda (Xodimlar/Oylik/Davomat hech birida emas)
+  if (users.some((u) => u.status === "terminated")) {
+    void import("./dismiss-user")
+      .then(({ sweepDismissedUsers }) => sweepDismissedUsers())
+      .catch(() => 0);
+  }
+  const filteredUsers = users.filter(
+    (u) =>
+      u.status !== "terminated" &&
+      (group === "active" ? isActiveStaffUser(u.status) : !isActiveStaffUser(u.status)),
+  );
+  // Admin hech qachon xodimlar/davomat ro‘yxatiga kirmaydi
+  const staffUsers = filteredUsers.filter((u) => u.role !== "admin");
+  if (!staffUsers.length) return [];
+
+  const userIds = staffUsers.map((u) => u.id);
+
+  // Bitta so‘rovda bog‘langan xodimlarni olish (N+1 o‘rniga)
+  const existingLinks = await db
+    .select({ userId: employeesTable.userId })
+    .from(employeesTable)
+    .where(inArray(employeesTable.userId, userIds));
+  const linkedUserIds = new Set(
+    existingLinks.map((r) => r.userId).filter((id): id is number => id != null),
+  );
+  const missing = staffUsers.filter((u) => !linkedUserIds.has(u.id));
+  // Yangi userlar kam bo‘ladi — faqat ular uchun ensure
+  if (missing.length) {
+    const chunk = 20;
+    for (let i = 0; i < missing.length; i += chunk) {
+      await Promise.all(
+        missing.slice(i, i + chunk).map((u) =>
+          ensureEmployeeForNewUser({
+            id: u.id,
+            fullName: u.fullName,
+            role: u.role,
+            departmentId: u.departmentId,
+          }).catch((err) => {
+            console.error("ensureEmployeeForNewUser", u.id, err);
+          }),
+        ),
+      );
+    }
+  }
+
+  let empRows: StaffRow[] = [];
+  try {
+    empRows = (await db
+      .select(EMP_LIST_SELECT)
+      .from(employeesTable)
+      .where(inArray(employeesTable.userId, userIds))
+      .orderBy(asc(employeesTable.fullName))) as StaffRow[];
+  } catch (err) {
+    console.error("staff-directory select fallback:", err);
+    const core = await db
+      .select(EMP_CORE_SELECT)
+      .from(employeesTable)
+      .where(inArray(employeesTable.userId, userIds))
+      .orderBy(asc(employeesTable.fullName));
+    empRows = core.map((r) => ({
+      ...r,
+      orgRole: null,
+      reportsToId: null,
+      location: null,
+      latitude: null,
+      longitude: null,
+      shiftType: "one",
+      shiftLabel: null,
+      employmentStatus: "working",
+      userId: null,
+      photoUrl: null,
+      login: null,
+      phone: null,
+      userStatus: null,
+      userRole: null,
+      fixedSalary: 0,
+      bonusPercent: 30,
+      branchNo: null,
+    }));
+  }
+
+  const faceSet = new Set<number>();
+  if (!opts?.skipFacePhotos) {
+    const faces = await db
+      .select({ userId: faceProfilesTable.userId, photoUrl: faceProfilesTable.photoUrl })
+      .from(faceProfilesTable)
+      .where(inArray(faceProfilesTable.userId, userIds));
+    for (const f of faces) {
+      if (f.photoUrl?.trim() && f.userId != null) faceSet.add(f.userId);
+    }
+  }
+
+  const empByUser = new Map<number, StaffRow>();
+  for (const r of empRows.sort((a, b) => orgRank(b.orgRole) - orgRank(a.orgRole) || a.id - b.id)) {
+    const uid = r.userId;
+    if (uid == null) continue;
+    if (!empByUser.has(uid)) empByUser.set(uid, r);
+  }
+
+  const [fallbackDept] = await db.select({ id: departmentsTable.id }).from(departmentsTable).limit(1);
+  const fallbackDeptId = fallbackDept?.id ?? 1;
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Tashkent" });
+
+  const healUserToTerminated: number[] = [];
+  const healEmpToDismissed: number[] = [];
+
+  const mapped = staffUsers.map((u) => {
+    const emp = empByUser.get(u.id);
+    const hasFace = faceSet.has(u.id);
+    const userStatus = normalizeUserStatus(u.status);
+    const fromUser = employmentFromUserStatus(u.status);
+    let employmentStatus = emp?.employmentStatus || fromUser;
+
+    /** Desync tuzatish: bo‘shatilgan ↔ terminated bir xil bo‘lsin */
+    if (isActiveStaffUser(u.status) && isDismissedEmploymentStatus(employmentStatus)) {
+      if (u.id) healUserToTerminated.push(u.id);
+      employmentStatus = "dismissed";
+    } else if (
+      userStatus === "terminated" &&
+      emp?.id &&
+      !isDismissedEmploymentStatus(emp.employmentStatus)
+    ) {
+      healEmpToDismissed.push(emp.id);
+      employmentStatus = "dismissed";
+    } else if (!isActiveStaffUser(u.status) && fromUser === "dismissed") {
+      employmentStatus = isDismissedEmploymentStatus(emp?.employmentStatus)
+        ? String(emp!.employmentStatus)
+        : "dismissed";
+    } else if (!isActiveStaffUser(u.status) && fromUser === "on_leave") {
+      employmentStatus = "on_leave";
+    }
+
+    if (emp) {
+      return {
+        ...emp,
+        fullName: formatPersonName(u.fullName.trim() || emp.fullName),
+        login: u.login ?? null,
+        phone: u.phone ?? null,
+        userStatus,
+        userRole: u.role,
+        orgRole: emp.orgRole || orgRoleFromUserRole(u.role),
+        employmentStatus,
+        photoUrl: staffPhotoUrl(u.id, hasFace, emp.photoUrl),
+        fixedSalary: Math.max(0, Math.round(Number(emp.fixedSalary ?? 0))),
+        bonusPercent: Math.max(0, Number(emp.bonusPercent ?? 30)),
+      };
+    }
+    return {
+      id: u.id,
+      fullName: formatPersonName(u.fullName),
+      position: ROLE_POSITION[u.role] || u.role || "Xodim",
+      departmentId: u.departmentId ?? fallbackDeptId,
+      mentorId: null,
+      hiredAt: today,
+      candidateId: null,
+      orgRole: orgRoleFromUserRole(u.role),
+      reportsToId: null,
+      location: null,
+      latitude: null,
+      longitude: null,
+      shiftType: "one",
+      shiftLabel: null,
+      employmentStatus,
+      userId: u.id,
+      photoUrl: staffPhotoUrl(u.id, hasFace, null),
+      login: u.login ?? null,
+      phone: u.phone ?? null,
+      userStatus,
+      userRole: u.role,
+      fixedSalary: 0,
+      bonusPercent: 30,
+      branchNo: null,
+      createdAt: u.createdAt,
+      updatedAt: u.createdAt,
+    };
+  });
+
+  if (healUserToTerminated.length) {
+    await Promise.all(
+      healUserToTerminated.map((uid) =>
+        db.update(usersTable).set({ status: "terminated" }).where(eq(usersTable.id, uid)),
+      ),
+    ).catch(() => undefined);
+    void import("./dismiss-user")
+      .then(({ sweepDismissedUsers }) => sweepDismissedUsers())
+      .catch(() => 0);
+  }
+  if (healEmpToDismissed.length) {
+    await Promise.all(
+      healEmpToDismissed.map((eid) =>
+        db
+          .update(employeesTable)
+          .set({ employmentStatus: "dismissed" })
+          .where(eq(employeesTable.id, eid)),
+      ),
+    ).catch(() => undefined);
+  }
+
+  if (group === "active") {
+    return mapped.filter((row) => !isDismissedEmploymentStatus(row.employmentStatus));
+  }
+
+  const healed = new Set(healUserToTerminated);
+  return mapped.filter((row) => !(row.userId != null && healed.has(row.userId)));
+}
+
+const PHARMACY_ORG_ROLES = ["coordinator", "manager", "pharmacist", "intern", "supervisor"] as const;
+
+/** Apteka tarmog‘i — employees jadvalidan orgRole bo‘yicha (login bo‘lmasa ham). */
+export async function loadPharmacyNetworkEmployees(): Promise<StaffRow[]> {
+  let rows: StaffRow[] = [];
+  try {
+    rows = (await db
+      .select(EMP_LIST_SELECT)
+      .from(employeesTable)
+      .where(inArray(employeesTable.orgRole, [...PHARMACY_ORG_ROLES]))
+      .orderBy(asc(employeesTable.fullName))) as StaffRow[];
+  } catch (err) {
+    console.error("loadPharmacyNetworkEmployees:", err);
+    return [];
+  }
+
+  const userIds = [
+    ...new Set(rows.map((r) => r.userId).filter((id): id is number => id != null)),
+  ];
+  const userMap = new Map<number, { login: string | null; phone: string | null; role: string; status: string }>();
+  if (userIds.length) {
+    const users = await db
+      .select({
+        id: usersTable.id,
+        login: usersTable.login,
+        phone: usersTable.phone,
+        role: usersTable.role,
+        status: usersTable.status,
+      })
+      .from(usersTable)
+      .where(inArray(usersTable.id, userIds));
+    for (const u of users) {
+      userMap.set(u.id, {
+        login: u.login,
+        phone: u.phone,
+        role: u.role,
+        status: u.status,
+      });
+    }
+  }
+
+  return rows.map((r) => {
+    const u = r.userId != null ? userMap.get(r.userId) : undefined;
+    return {
+      ...r,
+      fullName: formatPersonName(r.fullName),
+      login: u?.login ?? null,
+      phone: u?.phone ?? null,
+      userStatus: u ? normalizeUserStatus(u.status) : null,
+      userRole: u?.role ?? null,
+      employmentStatus: r.employmentStatus || "working",
+      fixedSalary: Math.max(0, Math.round(Number(r.fixedSalary ?? 0))),
+      bonusPercent: Math.max(0, Number(r.bonusPercent ?? 30)),
+    };
+  });
+}
+
+/**
+ * Mudiri (user) yo‘q filial qatorlari — `loadStaffFromUsers` ularni bermaydi.
+ * Yopilgan/bo‘shatilgan qatorlar kirmaydi.
+ */
+export async function loadVacantBranchRows(): Promise<StaffRow[]> {
+  try {
+    const rows = (await db
+      .select(EMP_LIST_SELECT)
+      .from(employeesTable)
+      .where(
+        and(
+          eq(employeesTable.orgRole, "manager"),
+          isNull(employeesTable.userId),
+          or(
+            isNull(employeesTable.employmentStatus),
+            notInArray(employeesTable.employmentStatus, ["dismissed", "closed"]),
+          ),
+        ),
+      )
+      .orderBy(asc(employeesTable.fullName))) as StaffRow[];
+    return rows.map((r) => ({
+      ...r,
+      login: null,
+      phone: null,
+      userStatus: null,
+      userRole: null,
+      employmentStatus: r.employmentStatus || "no_manager",
+      fixedSalary: Math.max(0, Math.round(Number(r.fixedSalary ?? 0))),
+      bonusPercent: Math.max(0, Number(r.bonusPercent ?? 30)),
+    }));
+  } catch (err) {
+    console.error("loadVacantBranchRows:", err);
+    return [];
+  }
+}
+
+/** Users + apteka tarmog‘i xodimlarini birlashtirish (id bo‘yicha). */
+export function mergeStaffRows(primary: StaffRow[], extra: StaffRow[]): StaffRow[] {
+  const byId = new Map<number, StaffRow>();
+  for (const r of primary) byId.set(r.id, r);
+  for (const r of extra) {
+    const prev = byId.get(r.id);
+    if (!prev) {
+      byId.set(r.id, r);
+      continue;
+    }
+    byId.set(r.id, {
+      ...prev,
+      ...r,
+      orgRole: r.orgRole || prev.orgRole,
+      reportsToId: r.reportsToId ?? prev.reportsToId,
+      location: r.location || prev.location,
+      login: prev.login || r.login,
+      phone: prev.phone || r.phone,
+      userRole: prev.userRole || r.userRole,
+      userStatus: prev.userStatus || r.userStatus,
+    });
+  }
+  return [...byId.values()].sort((a, b) => a.fullName.localeCompare(b.fullName, "uz"));
+}

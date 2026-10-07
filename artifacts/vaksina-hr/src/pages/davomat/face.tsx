@@ -1,0 +1,3440 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation } from "wouter";
+import {
+  MapPin,
+  ScanFace,
+  Loader2,
+  CheckCircle2,
+  Lock,
+  LogIn,
+  LogOut,
+  ShieldCheck,
+  Clock3,
+  CalendarDays,
+  XCircle,
+  History,
+  ArrowDown,
+  ArrowLeft,
+  Banknote,
+  QrCode,
+  SwitchCamera,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { FaceScanDialog } from "@/components/FaceScanDialog";
+import { QrScanDialog } from "@/components/QrScanDialog";
+import { DavomatPremiumView, type PremiumMethod } from "@/components/davomat/DavomatPremiumView";
+import { FingerprintEnrollDialog } from "@/components/davomat/FingerprintEnrollDialog";
+import {
+  DavomatCoachFinger,
+  signalDavomatCoachDone,
+} from "@/components/davomat/DavomatCoachFinger";
+import { useToast } from "@/hooks/use-toast";
+import { compressFaceSnapshotAsync, enrollFace, fetchFaceIdStatus, isFaceIdSupported, preloadFaceModels } from "@/lib/face-id";
+import { warmCamera } from "@/lib/camera-fast";
+import { deviceHeadingFromOrientation } from "@/lib/device-compass";
+import {
+  DAVOMAT_GEOFENCE_METERS,
+  DAVOMAT_OFFICE_GEOFENCE_METERS,
+  DAVOMAT_SITE_LABEL,
+  DAVOMAT_SITE_LAT,
+  DAVOMAT_SITE_LNG,
+  DavomatApiError,
+  confirmZonePresence,
+  facePunchDavomat,
+  captureFingerprintAssertion,
+  fetchFingerprintStatus,
+  fingerprintPunchDavomat,
+  fingerprintSupported,
+  type FingerprintStatus,
+  faceVerifyDavomat,
+  fetchDavomatMethods,
+  fetchDavomatSite,
+  fetchMyDavomat,
+  fetchMyWorkplace,
+  haversineMeters,
+  qrPunchDavomat,
+  type DavomatDayMetrics,
+  type DavomatEmployee,
+  type DavomatSite,
+  type WorkplaceInfo,
+} from "@/lib/davomat-api";
+import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
+import { useI18n } from "@/i18n/I18nProvider";
+import type { User } from "@workspace/api-client-react";
+import { canViewDavomat, isReviziyaRole } from "@/lib/roles";
+import { roleLabel } from "@/lib/candidate-access";
+import { formatPersonName } from "@/lib/person-name";
+import { ensureMobileTrack, endMobileAttendance } from "@/lib/mobile-attendance-api";
+import { MOBILE_GPS_GRANTED_EVENT } from "@/components/davomat/MobileGpsBackgroundTracker";
+import { useTelegramMiniAppChrome } from "@/pages/tg-entry";
+import { formatSom, useMyPayrollCard } from "@/lib/oylik-api";
+import { datesFromTo, formatShortUz, monthEnd, weeksOfMonth } from "@/lib/oylik-period";
+import { workShiftForUserRole, workplaceDisplayTitle } from "@/lib/work-schedule";
+import {
+  gpsEnableTipKey,
+  queryCameraPermission,
+  queryGeolocationPermission,
+  rememberGpsGranted,
+  requestDavomatPermissions,
+  wasCameraGrantedBefore,
+  wasGpsGrantedBefore,
+} from "@/lib/davomat-permissions";
+
+const FACE_SNAP_KEY = "davomat-face-snap";
+
+type Translate = (key: string, fallback?: string) => string;
+
+function tr(t: Translate, key: string, vars?: Record<string, string | number>): string {
+  let s = t(key);
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      s = s.replaceAll(`{${k}}`, String(v));
+    }
+  }
+  return s;
+}
+
+type Gps = {
+  lat: number;
+  lng: number;
+  accuracy: number;
+  /** Qurilma bergan vaqt — eskirgan nuqta bilan Keldim/Ketdim yozilmasin */
+  at: number;
+  heading?: number | null;
+  speed?: number | null;
+};
+
+/** Keldim/Ketdim paytida yangi o‘lchov. Kesh (ofisdagi eski nuqta) qabul qilinmaydi. */
+function readLivePunchGps(): Promise<{ lat: number; lng: number; accuracy: number; capturedAt: number }> {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(Object.assign(new Error("gps_unsupported"), { code: 2 }));
+      return;
+    }
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new Error("gps_timeout"), { code: 3 }));
+    }, 12_000);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        const age = Date.now() - pos.timestamp;
+        if (!Number.isFinite(pos.timestamp) || age > 20_000 || age < -60_000) {
+          reject(Object.assign(new Error("gps_stale"), { code: "gps_stale" }));
+          return;
+        }
+        const accRaw = pos.coords.accuracy;
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: typeof accRaw === "number" && Number.isFinite(accRaw) ? Math.round(accRaw) : 0,
+          capturedAt: pos.timestamp,
+        });
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        reject(err);
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10_000 },
+    );
+  });
+}
+type Verified = {
+  descriptor: number[];
+  fullName: string;
+  nextAction: "in" | "out" | "done";
+  checkIn: string;
+  checkOut: string;
+  checkInAt: string | null;
+  checkOutAt?: string | null;
+  faceImage?: string;
+  liveness?: { blinked?: boolean; poses?: string[]; motion?: number; score?: number };
+  /** QR skan tasdiqlangan — Keldim/Ketdim bosilganda punch */
+  qrPayload?: string;
+  /** Barmoq izi tasdig‘i (bir martalik, ~2 daqiqa amal qiladi) */
+  fingerAssertion?: unknown;
+};
+
+type GuideStep = "enroll" | "permission" | "zone" | "face" | "keldim" | "ketdim" | "done";
+
+function formatElapsed(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const s = Math.floor((ms % 60000) / 1000);
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+/** Ketdim muddatlari — backend bilan bir xil */
+const CHECKOUT_DEADLINE_HM = "23:55";
+const CHECKOUT_DEADLINE_SHIFT_TWO_HM = "02:00";
+const CHECKOUT_DEADLINE_SHIFT_THREE_HM = "10:00";
+
+function addYmdDays(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y!, m! - 1, d! + days));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+function ymdInTashkent(ms: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tashkent",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(ms));
+}
+
+/** workDate + endHm → smena tugashi (Toshkent, UTC+5) */
+function shiftEndMs(workDateYmd: string, endHm: string, overnight?: boolean): number {
+  const endDay = overnight ? addYmdDays(workDateYmd, 1) : workDateYmd;
+  const hm = /^\d{1,2}:\d{2}$/.test(endHm) ? endHm : "18:00";
+  return new Date(`${endDay}T${hm}:00+05:00`).getTime();
+}
+
+function normKeys(opts?: { shiftType?: string | null; shiftKeys?: string[] | null }): string[] {
+  const fromList = (opts?.shiftKeys || []).map((k) => String(k || "").toLowerCase()).filter(Boolean);
+  if (fromList.length) {
+    // "one+two" / "1|2" kabi bitta slot kalitini ham ochamiz
+    return fromList.flatMap((k) =>
+      k.split(/[+|,/\s]+/).map((p) => p.trim()).filter(Boolean),
+    );
+  }
+  const t = String(opts?.shiftType || "").toLowerCase();
+  if (!t) return [];
+  return t.split(/[+|,/\s]+/).map((p) => p.trim()).filter(Boolean);
+}
+
+function usesShiftThreeDeadline(opts?: {
+  shiftType?: string | null;
+  shiftKeys?: string[] | null;
+  overnight?: boolean;
+}): boolean {
+  const keys = normKeys(opts);
+  if (keys.some((k) => k === "three" || k === "3" || k === "shift_three")) return true;
+  const t = String(opts?.shiftType || "").toLowerCase();
+  if (t === "three" || t === "3" || t === "shift_three") return true;
+  if (opts?.overnight && !keys.includes("two") && !keys.includes("2")) return true;
+  return false;
+}
+
+function usesShiftTwoDeadline(opts?: {
+  shiftType?: string | null;
+  shiftKeys?: string[] | null;
+  overnight?: boolean;
+}): boolean {
+  if (usesShiftThreeDeadline(opts)) return false;
+  const keys = normKeys(opts);
+  if (keys.some((k) => k === "two" || k === "2" || k === "shift_two")) return true;
+  const t = String(opts?.shiftType || "").toLowerCase();
+  return t === "two" || t === "2" || t === "shift_two";
+}
+
+/** 2→ertasi 02:00 · 3→ertalab 10:00 · 1/ofis→23:55 */
+function checkoutDeadlineMs(
+  workDateYmd: string,
+  endHm: string,
+  overnight?: boolean,
+  opts?: { shiftType?: string | null; shiftKeys?: string[] | null },
+): number {
+  const endMs = shiftEndMs(workDateYmd, endHm, overnight);
+  const endDayYmd = ymdInTashkent(endMs);
+  const merged = { ...opts, overnight };
+  if (usesShiftThreeDeadline(merged)) {
+    return new Date(`${endDayYmd}T${CHECKOUT_DEADLINE_SHIFT_THREE_HM}:00+05:00`).getTime();
+  }
+  if (usesShiftTwoDeadline(merged)) {
+    return new Date(`${addYmdDays(endDayYmd, 1)}T${CHECKOUT_DEADLINE_SHIFT_TWO_HM}:00+05:00`).getTime();
+  }
+  return new Date(`${endDayYmd}T${CHECKOUT_DEADLINE_HM}:00+05:00`).getTime();
+}
+
+function checkoutDeadlineLabel(opts?: {
+  shiftType?: string | null;
+  shiftKeys?: string[] | null;
+  overnight?: boolean;
+  explicitHm?: string | null;
+}): string {
+  if (opts?.explicitHm) return opts.explicitHm;
+  if (usesShiftThreeDeadline(opts)) return CHECKOUT_DEADLINE_SHIFT_THREE_HM;
+  if (usesShiftTwoDeadline(opts)) return CHECKOUT_DEADLINE_SHIFT_TWO_HM;
+  return CHECKOUT_DEADLINE_HM;
+}
+
+/** Masofa: 1 km dan yuqori — km, aks holda metr */
+function formatMetersOrKm(meters: number): string {
+  if (!Number.isFinite(meters)) return "—";
+  const abs = Math.abs(meters);
+  if (abs >= 1000) {
+    const km = abs / 1000;
+    const raw = km >= 10 ? km.toFixed(1) : km.toFixed(2);
+    const value = raw.replace(/\.0$/, "").replace(/(\.\d)0$/, "$1");
+    return `${value} km`;
+  }
+  return `${Math.round(abs)} m`;
+}
+
+function formatHours(mins: number, t: Translate): string {
+  const n = Math.max(0, Math.round(mins));
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  const hour = t("davomat.hourShort");
+  const min = t("davomat.minShort");
+  if (h === 0) return `${m} ${min}`;
+  if (m === 0) return `${h} ${hour}`;
+  return `${h} ${hour} ${m} ${min}`;
+}
+
+function punchPlanLabelI18n(kind: "in" | "out", time: string, t: Translate): string {
+  return tr(t, kind === "in" ? "davomat.planIn" : "davomat.planOut", { time });
+}
+
+function hmToMinutes(hm: string): number | null {
+  if (!hm || hm === "—") return null;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(hm.trim());
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function workedMinutesFromPunch(params: {
+  checkIn: string;
+  checkOut: string;
+  checkInAt?: string | null;
+  checkOutAt?: string | null;
+}): number | null {
+  if (params.checkInAt && params.checkOutAt) {
+    return Math.max(
+      0,
+      Math.round(
+        (new Date(params.checkOutAt).getTime() - new Date(params.checkInAt).getTime()) / 60000,
+      ),
+    );
+  }
+  const a = hmToMinutes(params.checkIn);
+  const b = hmToMinutes(params.checkOut);
+  if (a == null || b == null) return null;
+  return Math.max(0, b - a);
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join("");
+}
+
+const STATUS_KEYS: Record<string, string> = {
+  present: "davomat.arrived",
+  late: "davomat.lateShort",
+  incomplete: "davomat.noOut",
+  absent: "davomat.absent",
+  leave: "davomat.leaveShort",
+};
+
+const STATUS_STYLE: Record<string, string> = {
+  present: "bg-teal-50 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300",
+  late: "bg-amber-50 text-amber-900 dark:bg-amber-500/15 dark:text-amber-300",
+  incomplete: "bg-slate-100 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300",
+  absent: "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
+  leave: "bg-violet-50 text-violet-800 dark:bg-violet-500/15 dark:text-violet-300",
+};
+
+const MONTH_KEYS = [
+  "month.1",
+  "month.2",
+  "month.3",
+  "month.4",
+  "month.5",
+  "month.6",
+  "month.7",
+  "month.8",
+  "month.9",
+  "month.10",
+  "month.11",
+  "month.12",
+] as const;
+
+const WD_KEYS = [
+  "davomat.wd.0",
+  "davomat.wd.1",
+  "davomat.wd.2",
+  "davomat.wd.3",
+  "davomat.wd.4",
+  "davomat.wd.5",
+  "davomat.wd.6",
+] as const;
+
+function parseYmd(ymd: string): { y: number; m: number; d: number } | null {
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return { y, m, d };
+}
+
+function weekdayIndex(y: number, m: number, d: number): number {
+  return new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay();
+}
+
+function dayShiftCaption(day: DavomatDayMetrics): string | null {
+  const plan = String(day.planShift || "").trim();
+  const name =
+    plan === "one+two"
+      ? "1+2"
+      : plan === "two+three"
+        ? "2+3"
+        : plan === "one+three"
+          ? "1+3"
+          : plan === "one"
+            ? "1-smena"
+            : plan === "two"
+              ? "2-smena"
+              : plan === "three"
+                ? "3-smena"
+                : plan === "office"
+                  ? "Ofis"
+                  : "";
+  const start = String(day.planStart || "").trim();
+  const end = String(day.planEnd || "").trim();
+  const hours = start && end ? `${start}–${end}` : "";
+  if (name && hours) return `${name} · ${hours}`;
+  if (name) return name;
+  if (hours) return hours;
+  return null;
+}
+
+function splitDay(ymd: string, t: Translate): { date: string; weekday: string } {
+  const p = parseYmd(ymd);
+  if (!p) return { date: ymd, weekday: "" };
+  const week = t(WD_KEYS[weekdayIndex(p.y, p.m, p.d)]!);
+  const month = t(MONTH_KEYS[p.m - 1]!);
+  return {
+    date: `${p.d}-${month}`,
+    weekday: `${week[0]!.toUpperCase()}${week.slice(1)}`,
+  };
+}
+
+function formatLongDate(ms: number, t: Translate): string {
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tashkent",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(ms));
+  const p = parseYmd(ymd);
+  if (!p) return ymd;
+  const week = t(WD_KEYS[weekdayIndex(p.y, p.m, p.d)]!);
+  const month = t(MONTH_KEYS[p.m - 1]!);
+  return `${week[0]!.toUpperCase()}${week.slice(1)}, ${p.d}-${month} ${p.y}`;
+}
+
+function formatDistanceParts(meters: number, t: Translate): { value: string; unit: string } {
+  if (!Number.isFinite(meters)) return { value: "—", unit: "" };
+  if (Math.abs(meters) >= 1000) {
+    const km = meters / 1000;
+    const raw = km >= 10 ? km.toFixed(1) : km.toFixed(2);
+    const value = raw.replace(/\.0$/, "").replace(/(\.\d)0$/, "$1");
+    return { value, unit: "km" };
+  }
+  const steps = Math.max(1, Math.round(Math.abs(meters) / 0.75));
+  return { value: String(steps), unit: t("davomat.stepsUnit") };
+}
+
+function formatDistance(meters: number | null | undefined, t: Translate): string {
+  if (meters == null || !Number.isFinite(meters)) return "—";
+  const p = formatDistanceParts(meters, t);
+  return `${p.value} ${p.unit}`;
+}
+
+function formatApproach(remain: number | null | undefined, t: Translate): string {
+  if (remain == null || !Number.isFinite(remain) || remain <= 0) return t("davomat.inZone");
+  if (remain >= 1000) return tr(t, "davomat.approachFar", { dist: formatDistance(remain, t) });
+  return tr(t, "davomat.approachSteps", { n: formatDistanceParts(remain, t).value });
+}
+
+function sortDaysDesc(days: DavomatDayMetrics[]): DavomatDayMetrics[] {
+  return [...days].sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function MobileStepHint({
+  step,
+  label,
+  tone = "amber",
+}: {
+  step: number;
+  label: string;
+  tone?: "amber" | "rose" | "emerald";
+}) {
+  const { t } = useI18n();
+  return (
+    <div
+      className={cn(
+        "dv-step-hint border-l-[3px]",
+        tone === "amber" && "border-l-primary",
+        tone === "rose" && "border-l-rose-500",
+        tone === "emerald" && "border-l-teal-500",
+      )}
+    >
+      <span
+        className={cn(
+          "dv-step-badge",
+          tone === "amber" && "dv-step-badge-warn",
+          tone === "rose" && "dv-step-badge-danger",
+          tone === "emerald" && "dv-step-badge-success",
+        )}
+      >
+        {step}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          {tr(t, "davomat.stepLabel", { n: step })}
+        </p>
+        <p className="text-sm font-medium leading-snug text-foreground">{label}</p>
+      </div>
+      <ArrowDown className="h-4 w-4 shrink-0 animate-bounce text-muted-foreground" aria-hidden />
+    </div>
+  );
+}
+
+function FlowArrow() {
+  return (
+    <div className="flex justify-center py-1 text-muted-foreground" aria-hidden>
+      <ArrowDown className="h-5 w-5 animate-bounce" />
+    </div>
+  );
+}
+
+function GuideBoard({
+  active,
+  faceRegistered,
+  inside,
+  hasGps,
+  cameraGranted,
+  adminAnywhere,
+  hasIn,
+  afterShiftEnd,
+  done,
+  pharmacyStaff,
+  canOpenFace,
+  canOpenQr,
+  onOpenFace,
+  onOpenQr,
+  methodsBusy,
+}: {
+  active: GuideStep;
+  faceRegistered: boolean | null;
+  inside: boolean;
+  hasGps: boolean;
+  cameraGranted: boolean;
+  adminAnywhere?: boolean;
+  hasIn: boolean;
+  afterShiftEnd: boolean;
+  done: boolean;
+  pharmacyStaff: boolean;
+  canOpenFace?: boolean;
+  canOpenQr?: boolean;
+  onOpenFace?: () => void;
+  onOpenQr?: () => void;
+  methodsBusy?: boolean;
+}) {
+  const { t } = useI18n();
+
+  if (pharmacyStaff) {
+    const permOk = cameraGranted && (adminAnywhere || hasGps);
+    const zoneOk = adminAnywhere || (hasGps && inside);
+    const steps = [
+      {
+        id: "permission" as const,
+        n: 1,
+        title: t("davomat.grantPermission"),
+        detail: t("davomat.permissionDetail"),
+      },
+      {
+        id: "zone" as const,
+        n: 2,
+        title: t("davomat.enterZone"),
+        detail: t("davomat.zoneDetail"),
+      },
+      {
+        id: "face" as const,
+        n: 3,
+        title: t("davomat.pickMethodTitle"),
+        detail: t("davomat.pickMethodDetail"),
+      },
+      {
+        id: (hasIn ? "ketdim" : "keldim") as GuideStep,
+        n: 4,
+        title: hasIn ? t("davomat.pressOut") : t("davomat.pressIn"),
+        detail: hasIn ? t("davomat.ketdimDetailMixed") : t("davomat.keldimDetailMixed"),
+      },
+    ];
+
+    return (
+      <section className="dv-card">
+        <div className="mb-3 flex items-start justify-between gap-2">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              {t("davomat.guideTitle")}
+            </p>
+            <h2 className="mt-0.5 text-base font-semibold text-foreground">{t("davomat.guideSteps")}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{t("davomat.guideHintPharmacy")}</p>
+          </div>
+          {done ? (
+            <span className="dv-tone-emerald rounded-full border px-2.5 py-1 text-[11px] font-semibold">
+              {t("davomat.todayDone")}
+            </span>
+          ) : null}
+        </div>
+
+        <ol className="space-y-0">
+          {steps.map((it, idx) => {
+            const isActive =
+              (it.n === 1 && active === "permission") ||
+              (it.n === 2 && active === "zone") ||
+              (it.n === 3 && active === "face") ||
+              (it.n === 4 && (active === "keldim" || active === "ketdim"));
+            const methodReady = Boolean(hasIn || (active === "keldim" && !done));
+            const passed =
+              done ||
+              (it.n === 1 && permOk) ||
+              (it.n === 2 && zoneOk) ||
+              (it.n === 3 && methodReady) ||
+              (it.n === 4 && done);
+
+            return (
+              <li key={`${it.id}-${it.n}`}>
+                {idx > 0 ? <FlowArrow /> : null}
+                <div
+                  className={cn(
+                    "flex gap-3 rounded-2xl border px-3 py-2.5 transition-colors",
+                    isActive && !passed && it.id !== "zone" && "dv-guide-active",
+                    passed && "dv-guide-passed",
+                    !isActive && !passed && "dv-guide-idle",
+                    it.id === "zone" && isActive && "dv-guide-danger",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
+                      passed && "dv-step-badge-success",
+                      isActive && !passed && it.id === "zone" && "dv-step-badge-danger",
+                      isActive && !passed && it.id !== "zone" && "dv-step-badge-warn",
+                      !isActive && !passed && "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {passed ? "✓" : it.n}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-foreground">
+                      {tr(t, "davomat.stepLabel", { n: it.n })}: {it.title}
+                    </p>
+                    <p
+                      className={cn(
+                        "mt-0.5 text-xs leading-snug",
+                        it.id === "zone" && isActive
+                          ? "font-medium text-rose-700 dark:text-rose-300"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {it.detail}
+                    </p>
+                    {it.n === 3 && !done ? (
+                      <div className="mt-3 flex items-stretch justify-center gap-2.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-auto min-h-[3.5rem] w-[7.75rem] shrink-0 flex-col gap-0.5 rounded-2xl px-2.5 py-2.5 text-primary-foreground shadow-sm"
+                          disabled={!canOpenFace || methodsBusy}
+                          onClick={() => onOpenFace?.()}
+                        >
+                          <span className="flex items-center justify-center gap-1 text-[11px] font-bold leading-none">
+                            <ScanFace className="h-3.5 w-3.5 shrink-0" />
+                            Face ID
+                          </span>
+                          <span className="text-center text-[10px] font-normal leading-tight opacity-90">
+                            {t("davomat.frontCam")}
+                          </span>
+                        </Button>
+                        <span className="self-center shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {t("davomat.orWord")}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-auto min-h-[3.5rem] w-[7.75rem] shrink-0 flex-col gap-0.5 rounded-2xl px-2.5 py-2.5 text-primary-foreground shadow-sm"
+                          disabled={!canOpenQr || methodsBusy}
+                          onClick={() => onOpenQr?.()}
+                        >
+                          <span className="flex items-center justify-center gap-1 text-[11px] font-bold leading-none">
+                            <QrCode className="h-3.5 w-3.5 shrink-0" />
+                            {t("davomat.qrScanner")}
+                          </span>
+                          <span className="text-center text-[10px] font-normal leading-tight opacity-90">
+                            {t("davomat.rearCam")}
+                          </span>
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+
+        {active === "zone" ? (
+          <p className="dv-tone-rose mt-3 rounded-xl border px-3 py-2 text-center text-sm font-semibold">
+            {t("davomat.zoneWarnBanner")}
+          </p>
+        ) : null}
+        {(active === "ketdim" || (hasIn && !done && afterShiftEnd)) ? (
+          <p className="dv-tone-rose mt-3 rounded-xl border px-3 py-2 text-center text-sm font-semibold">
+            {t("davomat.step4OutBanner")}
+          </p>
+        ) : null}
+      </section>
+    );
+  }
+
+  const items: Array<{
+    id: GuideStep;
+    n: number;
+    title: string;
+    detail: string;
+  }> = [
+    {
+      id: "enroll",
+      n: 0,
+      title: t("davomat.enrollFace"),
+      detail: t("davomat.enrollDetail"),
+    },
+    {
+      id: "permission",
+      n: 1,
+      title: t("davomat.grantPermission"),
+      detail: t("davomat.permissionDetail"),
+    },
+    {
+      id: "zone",
+      n: 1,
+      title: t("davomat.enterZone"),
+      detail: t("davomat.zoneDetail"),
+    },
+    {
+      id: "face",
+      n: 2,
+      title: t("davomat.pressFace"),
+      detail: t("davomat.faceDetail"),
+    },
+    {
+      id: "keldim",
+      n: 3,
+      title: t("davomat.pressIn"),
+      detail: t("davomat.keldimDetail"),
+    },
+    {
+      id: "ketdim",
+      n: 4,
+      title: t("davomat.pressOut"),
+      detail: t("davomat.ketdimDetail"),
+    },
+  ];
+
+  const visible = items.filter((it) => {
+    if (it.id === "enroll") return faceRegistered === false;
+    if (it.id === "zone") return faceRegistered !== false && hasGps && !inside && !hasIn && !done;
+    if (it.id === "permission") return faceRegistered !== false && (!hasGps || !inside) && !hasIn && !done;
+    if (it.id === "face") return faceRegistered !== false;
+    if (it.id === "keldim") return faceRegistered !== false;
+    if (it.id === "ketdim") return faceRegistered !== false && (hasIn || afterShiftEnd || done);
+    return true;
+  });
+
+  const board = (() => {
+    const out: typeof items = [];
+    const seen = new Set<number>();
+    for (const it of visible) {
+      if (it.id === "enroll") {
+        out.push(it);
+        continue;
+      }
+      if (it.id === "permission" || it.id === "zone") {
+        if (seen.has(1)) continue;
+        seen.add(1);
+        out.push(
+          !hasGps
+            ? items.find((x) => x.id === "permission")!
+            : inside
+              ? items.find((x) => x.id === "permission")!
+              : items.find((x) => x.id === "zone")!,
+        );
+        continue;
+      }
+      if (seen.has(it.n)) continue;
+      seen.add(it.n);
+      out.push(it);
+    }
+    return out;
+  })();
+
+  return (
+    <section className="dv-card">
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            {t("davomat.guideTitle")}
+          </p>
+          <h2 className="mt-0.5 text-base font-semibold text-foreground">{t("davomat.guideSteps")}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">{t("davomat.guideHint")}</p>
+        </div>
+        {done ? (
+          <span className="dv-tone-emerald rounded-full border px-2.5 py-1 text-[11px] font-semibold">
+            {t("davomat.todayDone")}
+          </span>
+        ) : null}
+      </div>
+      <ol className="space-y-0">
+        {board.map((it, idx) => {
+          const isActive =
+            active === it.id ||
+            (active === "zone" && it.id === "zone") ||
+            (active === "permission" && it.id === "permission");
+          const passed =
+            done ||
+            (it.id === "enroll" && faceRegistered) ||
+            (it.n === 1 && hasGps && inside) ||
+            (it.id === "face" && (Boolean(hasIn) || active === "keldim" || active === "ketdim")) ||
+            (it.id === "keldim" && hasIn) ||
+            (it.id === "ketdim" && done);
+
+          return (
+            <li key={`${it.id}-${it.n}`}>
+              {idx > 0 ? <FlowArrow /> : null}
+              <div
+              className={cn(
+                "flex gap-3 rounded-2xl border px-3 py-2.5 transition-colors",
+                  isActive && !passed && it.id !== "zone" && "dv-guide-active",
+                  passed && "dv-guide-passed",
+                  !isActive && !passed && "dv-guide-idle",
+                  it.id === "zone" && isActive && "dv-guide-danger",
+              )}
+            >
+              <span
+                className={cn(
+                  "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
+                    passed && "dv-step-badge-success",
+                    isActive && !passed && it.id === "zone" && "dv-step-badge-danger",
+                    isActive && !passed && it.id !== "zone" && "dv-step-badge-warn",
+                    !isActive && !passed && "bg-muted text-muted-foreground",
+                )}
+              >
+                {passed ? "✓" : it.n === 0 ? "!" : it.n}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-foreground">
+                    {it.n === 0 ? t("davomat.stepFirst") : tr(t, "davomat.stepLabel", { n: it.n })}: {it.title}
+                </p>
+                <p
+                  className={cn(
+                    "mt-0.5 text-xs leading-snug",
+                      it.id === "zone" && isActive
+                        ? "font-medium text-rose-700 dark:text-rose-300"
+                        : "text-muted-foreground",
+                  )}
+                >
+                  {it.detail}
+                </p>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {active === "zone" ? (
+        <p className="dv-tone-rose mt-3 rounded-xl border px-3 py-2 text-center text-sm font-semibold">
+          {t("davomat.zoneWarnBanner")}
+        </p>
+      ) : null}
+      {active === "ketdim" ? (
+        <p className="dv-tone-rose mt-3 rounded-xl border px-3 py-2 text-center text-sm font-semibold">
+          {t("davomat.step4OutBanner")}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function isTelegramMiniAppContext(): boolean {
+  if (typeof window === "undefined") return false;
+  if (window.Telegram?.WebApp) return true;
+  try {
+    return new URL(window.location.href).searchParams.get("tg") === "1";
+  } catch {
+    return false;
+  }
+}
+
+export default function DavomatFacePage() {
+  const { user, isAuthenticated, switchToUser } = useAuth();
+  const { t, locale } = useI18n();
+  const [, setLocation] = useLocation();
+  const cardMonth = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Tashkent" }).slice(0, 7);
+  const oylikCard = useMyPayrollCard(cardMonth, isAuthenticated);
+  const isTgMiniApp = useMemo(() => isTelegramMiniAppContext(), []);
+  const checklistBranchId = useMemo(() => {
+    try {
+      const id = Number(new URL(window.location.href).searchParams.get("branchId"));
+      return Number.isFinite(id) && id > 0 ? id : null;
+    } catch {
+      return null;
+    }
+  }, []);
+  useTelegramMiniAppChrome();
+  const { toast } = useToast();
+  const canReport = canViewDavomat(user?.role);
+  const [gps, setGps] = useState<Gps | null>(null);
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsSharing, setGpsSharing] = useState(false);
+  const [cameraGranted, setCameraGranted] = useState(false);
+  const [site, setSite] = useState<DavomatSite>({
+    allowedMeters: DAVOMAT_OFFICE_GEOFENCE_METERS,
+    label: DAVOMAT_SITE_LABEL,
+    latitude: DAVOMAT_SITE_LAT,
+    longitude: DAVOMAT_SITE_LNG,
+    kind: "office",
+  });
+  const [workplace, setWorkplace] = useState<WorkplaceInfo | null>(null);
+  const [historyDays, setHistoryDays] = useState<DavomatDayMetrics[]>([]);
+  const [historyRange, setHistoryRange] = useState<"day" | "week" | "month">("week");
+  const [excuseOpenDate, setExcuseOpenDate] = useState<string | null>(null);
+  const [faceRegistered, setFaceRegistered] = useState<boolean | null>(null);
+  const [enrollOpen, setEnrollOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [verified, setVerified] = useState<Verified | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirmOut, setConfirmOut] = useState(false);
+  const [earlyLeaveNote, setEarlyLeaveNote] = useState("");
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [pharmacyStaff, setPharmacyStaff] = useState(false);
+  const [officeStaff, setOfficeStaff] = useState(false);
+  const [adminQrAnywhere, setAdminQrAnywhere] = useState(false);
+  const [methodsReady, setMethodsReady] = useState(false);
+  const [qrMethodAllowed, setQrMethodAllowed] = useState(true);
+  const [faceMethodAllowed, setFaceMethodAllowed] = useState(true);
+  const [canManageQr, setCanManageQr] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [methodsHidden, setMethodsHidden] = useState(false);
+  const [qrStream, setQrStream] = useState<MediaStream | null>(null);
+  const [methodHint, setMethodHint] = useState<"FACE_ID" | "QR" | "FINGERPRINT" | null>(null);
+  const [selectedMethod, setSelectedMethod] = useState<PremiumMethod>("FACE_ID");
+  const [fingerStatus, setFingerStatus] = useState<FingerprintStatus | null>(null);
+  const [fingerEnrollOpen, setFingerEnrollOpen] = useState(false);
+  const [fingerScanning, setFingerScanning] = useState(false);
+  const fingerSeqRef = useRef(0);
+  const fingerAllowed = fingerStatus?.enabled === true;
+
+  useEffect(() => {
+    if (qrOpen) return;
+    setQrStream((prev) => {
+      prev?.getTracks().forEach((t) => t.stop());
+      return null;
+    });
+  }, [qrOpen]);
+  const [faceImage, setFaceImage] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem(FACE_SNAP_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const watchRef = useRef<number | null>(null);
+  /** Silliqlanmagan oxirgi GPS o‘lchovi — Keldim/Ketdimga aynan shu yuboriladi */
+  const rawGpsRef = useRef<{ lat: number; lng: number; accuracy: number; capturedAt: number } | null>(null);
+  const compassRef = useRef<number | null>(null);
+  const lastCompassRef = useRef<number | null>(null);
+  const hasAbsoluteCompassRef = useRef(false);
+  /** Kompas ~60 Hz keladi — butun sahifa qayta chizilmasin, ≤4 marta/s yangilanadi */
+  const compassCommitRef = useRef<{ at: number; timer: number | null }>({ at: 0, timer: null });
+  const punchLockRef = useRef(false);
+  const gpsShareLockRef = useRef(false);
+  const tgBootRef = useRef(false);
+  const tgScanRef = useRef(false);
+  const pharmacyGateRef = useRef(false);
+  const zoneConfirmRef = useRef(false);
+
+  const applyHistory = useCallback((emp?: DavomatEmployee | null) => {
+    if (!emp?.days?.length) return;
+    setHistoryDays(sortDaysDesc(emp.days));
+  }, []);
+
+  const refreshFaceStatus = useCallback(async () => {
+    if (!isAuthenticated) {
+      setFaceRegistered(null);
+      return;
+    }
+    try {
+      const s = await fetchFaceIdStatus();
+      setFaceRegistered(s.registered);
+    } catch {
+      setFaceRegistered(null);
+    }
+  }, [isAuthenticated]);
+
+  const loadWorkplace = useCallback(async (coords?: { lat: number; lng: number } | null) => {
+    if (!isAuthenticated) {
+      setWorkplace(null);
+      return;
+    }
+    try {
+      const useField =
+        isReviziyaRole(user?.role) &&
+        coords &&
+        Number.isFinite(coords.lat) &&
+        Number.isFinite(coords.lng);
+      const w = await fetchMyWorkplace(
+        useField ? { lat: coords!.lat, lng: coords!.lng } : undefined,
+      );
+      setWorkplace(w);
+    } catch {
+      setWorkplace(null);
+    }
+  }, [isAuthenticated, user?.role]);
+
+  useEffect(() => {
+    if (!workplace?.zonePresence?.enabled) return;
+    const timer = window.setInterval(() => {
+      void loadWorkplace();
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [workplace?.zonePresence?.enabled, loadWorkplace]);
+
+  const loadHistory = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const mine = await fetchMyDavomat();
+      applyHistory(mine.employee);
+    } catch {
+      /* Face ID dan keyin ham keladi */
+    }
+  }, [isAuthenticated, applyHistory]);
+
+  useEffect(() => {
+    void fetchDavomatSite().then(setSite);
+  }, []);
+
+  /** Face ID model — kamera ruxsatini fonida qayta so‘ramaymiz (bir marta yetadi) */
+  useEffect(() => {
+    // ~7 MB model: sahifa, xarita va API birinchi yuklansin; Face ID bosilsa darhol yuklanadi
+    const idle = (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+      .requestIdleCallback;
+    const preloadTimer = window.setTimeout(() => {
+      if (idle) idle(() => preloadFaceModels(), { timeout: 3000 });
+      else preloadFaceModels();
+    }, 2500);
+    void queryCameraPermission().then((state) => {
+      if (state === "granted") setCameraGranted(true);
+    });
+    // Faqat ruxsat holatini tekshirish — getUserMedia yo‘q (dialog qayta chiqmasin)
+    void warmCamera("user").then((ok) => {
+      if (ok) setCameraGranted(true);
+    });
+    return () => window.clearTimeout(preloadTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!workplace?.site) return;
+    if (
+      typeof workplace.site.latitude !== "number" ||
+      typeof workplace.site.longitude !== "number"
+    ) {
+      return;
+    }
+    setSite({
+      allowedMeters: workplace.allowedMeters || DAVOMAT_GEOFENCE_METERS,
+      label: workplace.site.label,
+      latitude: workplace.site.latitude,
+      longitude: workplace.site.longitude,
+      kind: workplace.site.kind,
+    });
+  }, [workplace]);
+
+  useEffect(() => {
+    void loadWorkplace(null);
+  }, [loadWorkplace]);
+
+  /** Reviziya: GPS bo‘yicha eng yaqin filial/ofis zonasini yangilash (debounce) */
+  useEffect(() => {
+    if (!isReviziyaRole(user?.role)) return;
+    if (!gps || !Number.isFinite(gps.lat) || !Number.isFinite(gps.lng)) return;
+    const t = window.setTimeout(() => {
+      void loadWorkplace({ lat: gps.lat, lng: gps.lng });
+    }, 900);
+    return () => window.clearTimeout(t);
+  }, [user?.role, gps?.lat, gps?.lng, loadWorkplace]);
+
+  /** Telefon OS bildirishnomasi ruxsati — Ketdim eslatmalari uchun */
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "default") return;
+    void Notification.requestPermission();
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    void loadHistory();
+  }, [loadHistory]);
+
+  useEffect(() => {
+    void refreshFaceStatus();
+  }, [refreshFaceStatus]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setPharmacyStaff(false);
+      setAdminQrAnywhere(false);
+      setCanManageQr(false);
+      setQrMethodAllowed(true);
+      setFaceMethodAllowed(true);
+      setMethodsReady(true);
+      pharmacyGateRef.current = false;
+      return;
+    }
+    setMethodsReady(false);
+    pharmacyGateRef.current = false;
+    let alive = true;
+    let first = true;
+    const load = () => {
+      const initial = first;
+      first = false;
+      void fetchDavomatMethods()
+        .then((m) => {
+          if (!alive) return;
+          const faceOk = m.face !== false && m.methods.includes("FACE_ID");
+          const qrOk = m.qr !== false && m.methods.includes("QR");
+          setPharmacyStaff(m.pharmacyStaff);
+          setOfficeStaff(Boolean(m.officeStaff) || (m.methods.includes("QR") && !m.pharmacyStaff && !m.adminQrAnywhere));
+          setAdminQrAnywhere(Boolean(m.adminQrAnywhere));
+          setCanManageQr(m.canManageQr);
+          setQrMethodAllowed(qrOk);
+          setFaceMethodAllowed(faceOk);
+          setSelectedMethod((cur) => {
+            if (cur === "FACE_ID" && faceOk) return cur;
+            if (cur === "QR" && qrOk) return cur;
+            if (cur === "FINGERPRINT" && m.finger) return cur;
+            if (faceOk) return "FACE_ID";
+            if (qrOk) return "QR";
+            return m.finger ? "FINGERPRINT" : cur;
+          });
+          const seq = fingerSeqRef.current;
+          if (m.finger) {
+            void fetchFingerprintStatus()
+              .then((s) => {
+                if (alive && fingerSeqRef.current === seq) setFingerStatus(s);
+              })
+              .catch(() => {
+                if (alive && initial && fingerSeqRef.current === seq) setFingerStatus(null);
+              });
+          } else if (fingerSeqRef.current === seq) {
+            setFingerStatus(null);
+          }
+        })
+        .catch(() => {
+          if (!alive || !initial) return;
+          setPharmacyStaff(false);
+          setOfficeStaff(false);
+          setAdminQrAnywhere(false);
+          setCanManageQr(false);
+          setQrMethodAllowed(true);
+          setFaceMethodAllowed(true);
+        })
+        .finally(() => {
+          if (alive) setMethodsReady(true);
+        });
+    };
+    load();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    const poll = window.setInterval(onVisible, 60_000);
+    return () => {
+      alive = false;
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      window.clearInterval(poll);
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const applyGps = (pos: GeolocationPosition) => {
+    const gpsHeadingRaw = pos.coords.heading;
+    const gpsHeading =
+      typeof gpsHeadingRaw === "number" && Number.isFinite(gpsHeadingRaw) && gpsHeadingRaw >= 0
+        ? gpsHeadingRaw
+        : null;
+    const speed =
+      typeof pos.coords.speed === "number" && Number.isFinite(pos.coords.speed)
+        ? pos.coords.speed
+        : null;
+    const movingFast = speed != null && speed > 0.6;
+    const accRaw = pos.coords.accuracy;
+    const acc =
+      typeof accRaw === "number" && Number.isFinite(accRaw) ? Math.round(accRaw) : 25;
+    const capturedAt = Number.isFinite(pos.timestamp) ? pos.timestamp : Date.now();
+    const prevRaw = rawGpsRef.current;
+    // Eski/keshdagi nuqta yangi aniqroq nuqtani bosib ketmasin
+    if (!prevRaw || capturedAt >= prevRaw.capturedAt) {
+      rawGpsRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: acc, capturedAt };
+    }
+
+    setGps((prev) => {
+      if (prev && capturedAt < prev.at) return prev;
+      // Asosiy: kompas (telefon oldi). GPS heading — yurishda / kompas yo‘q.
+      let nextHeading = lastCompassRef.current;
+      if (nextHeading == null && movingFast && gpsHeading != null) {
+        nextHeading = gpsHeading;
+      }
+      if (nextHeading == null && prev) {
+        const dLat = Math.abs(pos.coords.latitude - prev.lat);
+        const dLng = Math.abs(pos.coords.longitude - prev.lng);
+        if (dLat > 2.5e-7 || dLng > 2.5e-7) {
+          const toRad = (d: number) => (d * Math.PI) / 180;
+          const φ1 = toRad(prev.lat);
+          const φ2 = toRad(pos.coords.latitude);
+          const Δλ = toRad(pos.coords.longitude - prev.lng);
+          const y = Math.sin(Δλ) * Math.cos(φ2);
+          const x =
+            Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+          nextHeading = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+        } else {
+          nextHeading = prev.heading ?? null;
+        }
+      }
+
+      let lat = pos.coords.latitude;
+      let lng = pos.coords.longitude;
+      if (prev && acc > 12) {
+        const jumpM = haversineMeters(prev.lat, prev.lng, lat, lng) || 0;
+        if (jumpM < 80) {
+          const alpha = jumpM < 3 ? 0.55 : jumpM < 15 ? 0.72 : 0.88;
+          lat = prev.lat + (lat - prev.lat) * alpha;
+          lng = prev.lng + (lng - prev.lng) * alpha;
+        }
+      }
+
+      return {
+        lat,
+        lng,
+        accuracy: acc,
+        at: Number.isFinite(pos.timestamp) ? pos.timestamp : Date.now(),
+        heading: nextHeading,
+        speed,
+      };
+    });
+    rememberGpsGranted();
+    setGpsError(null);
+  };
+
+  const onCompass = useCallback((ev: DeviceOrientationEvent) => {
+    // Absolute bor bo‘lsa, relative eventlarni e’tiborsiz qoldiramiz
+    if (ev.type === "deviceorientationabsolute") {
+      hasAbsoluteCompassRef.current = true;
+    } else if (hasAbsoluteCompassRef.current && ev.type === "deviceorientation") {
+      return;
+    }
+    const deg = deviceHeadingFromOrientation(ev);
+    if (deg == null) return;
+    lastCompassRef.current = deg;
+    const c = compassCommitRef.current;
+    if (c.timer != null) return;
+    c.timer = window.setTimeout(() => {
+      c.timer = null;
+      c.at = performance.now();
+      const next = lastCompassRef.current;
+      if (next == null) return;
+      setGps((prev) => {
+        if (!prev) return prev;
+        if (prev.heading != null) {
+          const delta = Math.abs(((prev.heading - next) + 540) % 360 - 180);
+          if (delta < 3) return prev;
+        }
+        return { ...prev, heading: next };
+      });
+    }, Math.max(0, 250 - (performance.now() - c.at)));
+  }, []);
+
+  const startCompass = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (compassRef.current) return;
+    const DOE = DeviceOrientationEvent as unknown as {
+      requestPermission?: () => Promise<"granted" | "denied" | "default">;
+    };
+    try {
+      if (typeof DOE.requestPermission === "function") {
+        const p = await DOE.requestPermission();
+        if (p !== "granted") return;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const opts: AddEventListenerOptions = { capture: true, passive: true };
+    window.removeEventListener("deviceorientationabsolute", onCompass as EventListener, true);
+    window.removeEventListener("deviceorientation", onCompass as EventListener, true);
+    // Absolute birinchi (Android Chrome)
+    window.addEventListener("deviceorientationabsolute", onCompass as EventListener, opts);
+    window.addEventListener("deviceorientation", onCompass as EventListener, opts);
+    compassRef.current = 1;
+  }, [onCompass]);
+
+  const gpsErrorMessage = useCallback(
+    (code: string | null | undefined): string => {
+      if (!code) return t("davomat.gpsFailed");
+      if (code === "gps_unsupported") return t("davomat.gpsUnsupported");
+      if (code === "gps_denied") return t("davomat.gpsDenied");
+      if (code === "gps_services_off") return t(gpsEnableTipKey());
+      return t("davomat.gpsFailed");
+    },
+    [t],
+  );
+
+  const startWatch = useCallback(() => {
+    if (!navigator.geolocation) return;
+    if (watchRef.current != null) navigator.geolocation.clearWatch(watchRef.current);
+    watchRef.current = navigator.geolocation.watchPosition(
+      applyGps,
+      (err) => {
+        if (err.code === 1) {
+          setGps(null);
+          setGpsError(t("davomat.gpsDenied"));
+          return;
+        }
+        // Bir joyda turganda watch timeout beradi — oxirgi nuqta hali yangi bo‘lsa xato emas
+        const raw = rawGpsRef.current;
+        if (raw && Date.now() - raw.capturedAt < 40_000) return;
+        if (err.code === 2) setGps(null);
+        setGpsError(err.code === 2 || err.code === 3 ? t(gpsEnableTipKey()) : t("davomat.gpsFailed"));
+      },
+      // Tez yangilanish — yurishda marker harakati silliq
+      { enableHighAccuracy: true, maximumAge: 2_000, timeout: 15_000 },
+    );
+    void startCompass();
+  }, [t, startCompass]);
+
+  /** Telefon bir joyda tursa watch yangilanmaydi — nuqta eskirib «GPS yoqing» chiqib qolmasin */
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    let inflight = false;
+    const refresh = () => {
+      if (document.visibilityState !== "visible" || watchRef.current == null || inflight) return;
+      const raw = rawGpsRef.current;
+      if (raw && Date.now() - raw.capturedAt < 12_000) return;
+      inflight = true;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          inflight = false;
+          applyGps(pos);
+        },
+        (err) => {
+          inflight = false;
+          if (err.code === 1) {
+            setGps(null);
+            setGpsError(t("davomat.gpsDenied"));
+          }
+        },
+        { enableHighAccuracy: true, maximumAge: 5_000, timeout: 12_000 },
+      );
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      // iOS fonda watch’ni to‘xtatadi — ilovaga qaytganda qayta ulaymiz
+      if (watchRef.current != null) startWatch();
+      refresh();
+    };
+    const timer = window.setInterval(refresh, 6_000);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startWatch, t]);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGpsError(t("davomat.gpsUnsupported"));
+    }
+    // Oldingi ruxsatlar — tugma «Joylashuv olinmoqda»da qolib ketmasin
+    if (wasCameraGrantedBefore()) setCameraGranted(true);
+    void queryCameraPermission().then((state) => {
+      if (state === "granted") setCameraGranted(true);
+    });
+    // Allaqachon ruxsat berilgan bo‘lsa — tugmasiz darhol kuzatish
+    void queryGeolocationPermission().then((state) => {
+      if (state === "granted" || wasGpsGrantedBefore()) {
+        startWatch();
+      }
+    });
+    void startCompass();
+    return () => {
+      if (watchRef.current != null) navigator.geolocation.clearWatch(watchRef.current);
+      window.removeEventListener("deviceorientationabsolute", onCompass as EventListener, true);
+      window.removeEventListener("deviceorientation", onCompass as EventListener, true);
+      compassRef.current = null;
+      if (compassCommitRef.current.timer != null) {
+        window.clearTimeout(compassCommitRef.current.timer);
+        compassCommitRef.current.timer = null;
+      }
+    };
+  }, [t, onCompass, startCompass, startWatch]);
+
+  const requestLocationPermission = async () => {
+    if (gpsShareLockRef.current) return;
+    gpsShareLockRef.current = true;
+    preloadFaceModels();
+    setGpsSharing(true);
+    const safety = window.setTimeout(() => {
+          setGpsSharing(false);
+      gpsShareLockRef.current = false;
+    }, 14_000);
+    try {
+      const raw = rawGpsRef.current;
+      const gpsAlreadyOk = Boolean(gps) && !gpsError && Boolean(raw) && Date.now() - raw!.capturedAt < 30_000;
+      const result = await requestDavomatPermissions({
+        gpsTimeoutMs: 8_000,
+        skipGps: gpsAlreadyOk,
+      });
+
+      if (result.camera) {
+        setCameraGranted(true);
+      } else if (!wasCameraGrantedBefore()) {
+        setCameraGranted(false);
+      }
+
+      if (result.gps) {
+        applyGps(result.gps);
+        startWatch();
+        setGpsError(null);
+      } else if (result.gpsError && !gpsAlreadyOk) {
+        setGpsError(gpsErrorMessage(result.gpsError));
+      }
+
+      const gpsOk = Boolean(result.gps) || gpsAlreadyOk;
+      // Ko‘chma ruxsat: lokatsiya berilishi bilan tracking avtomatik (Boshlash yo‘q)
+      if (gpsOk) {
+        const lat = result.gps?.coords.latitude ?? gps?.lat;
+        const lng = result.gps?.coords.longitude ?? gps?.lng;
+        const accuracy = result.gps?.coords.accuracy ?? gps?.accuracy;
+        if (typeof lat === "number" && typeof lng === "number") {
+          void ensureMobileTrack({ latitude: lat, longitude: lng, accuracy }).catch(() => undefined);
+          window.dispatchEvent(
+            new CustomEvent(MOBILE_GPS_GRANTED_EVENT, {
+              detail: { latitude: lat, longitude: lng, accuracy },
+            }),
+          );
+        }
+      }
+      if (gpsOk && result.camera) {
+        toast({
+          title: t("davomat.gpsGrantedTitle"),
+          description: result.gps
+            ? tr(t, "davomat.gpsGrantedDesc", {
+                m: Math.round(result.gps.coords.accuracy || 0),
+              })
+            : t("davomat.permsAllOk"),
+        });
+      } else if (result.camera && !gpsOk && adminQrAnywhere) {
+        toast({
+          title: t("davomat.gpsGrantedTitle"),
+          description: t("davomat.permsAllOk"),
+        });
+      } else if (gpsOk && !result.camera) {
+        toast({
+          title: t("davomat.permsCamBlockedTitle"),
+          description:
+            result.cameraError === "camera_missing"
+              ? t("davomat.permsCamMissing")
+              : t("davomat.permsCamDenied"),
+          variant: "destructive",
+        });
+      } else if (!gpsOk && result.camera) {
+        toast({
+          title: t("davomat.gpsNotGranted"),
+          description: gpsErrorMessage(result.gpsError),
+          variant: "destructive",
+        });
+      } else {
+        const camMsg =
+          result.cameraError === "camera_missing"
+            ? t("davomat.permsCamMissing")
+            : result.cameraError === "camera_denied"
+              ? t("davomat.permsCamDenied")
+              : null;
+        toast({
+          title: t("davomat.gpsNotGranted"),
+          description: camMsg || gpsErrorMessage(result.gpsError),
+          variant: "destructive",
+        });
+      }
+    } finally {
+      window.clearTimeout(safety);
+        setGpsSharing(false);
+      gpsShareLockRef.current = false;
+    }
+  };
+
+  const checkInAtIso = verified?.checkInAt || workplace?.today.checkInAt || null;
+  const checkOutAtIso = verified?.checkOutAt || workplace?.today.checkOutAt || null;
+  const dayStatus = workplace?.today.status || null;
+  const working =
+    Boolean(checkInAtIso) &&
+    dayStatus !== "absent" &&
+    dayStatus !== "leave" &&
+    (verified?.nextAction || workplace?.today.nextAction) === "out";
+
+  const workDateYmd =
+    workplace?.workDate ||
+    (checkInAtIso ? ymdInTashkent(new Date(checkInAtIso).getTime()) : null) ||
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tashkent",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(nowTick));
+
+  const priorOfficeMs =
+    user?.role === "koordinator" ? Math.max(0, workplace?.today.priorOfficeMs ?? 0) : 0;
+
+  const elapsedLabel = useMemo(() => {
+    if (!checkInAtIso) return formatElapsed(priorOfficeMs);
+    const start = new Date(checkInAtIso).getTime();
+    const shiftEnd =
+      workplace?.shift?.end ||
+      (user?.role ? workShiftForUserRole(user.role).end : null) ||
+      "18:00";
+    const overnight =
+      workplace?.shift?.overnight ??
+      (user?.role ? Boolean(workShiftForUserRole(user.role).overnight) : false);
+    const deadlineCap = checkoutDeadlineMs(workDateYmd, shiftEnd, overnight, {
+      shiftType: workplace?.shift?.type,
+      shiftKeys: workplace?.shift?.keys,
+    });
+    const rawEnd = checkOutAtIso
+      ? new Date(checkOutAtIso).getTime()
+      : Math.min(nowTick, deadlineCap);
+    return formatElapsed(Math.max(0, rawEnd - start) + priorOfficeMs);
+  }, [
+    priorOfficeMs,
+    checkInAtIso,
+    checkOutAtIso,
+    nowTick,
+    workDateYmd,
+    workplace?.shift?.end,
+    workplace?.shift?.overnight,
+    workplace?.shift?.type,
+    workplace?.shift?.keys,
+    dayStatus,
+    user?.role,
+  ]);
+
+  const clockLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat(locale === "ru" ? "ru-RU" : "uz-UZ", {
+        timeZone: "Asia/Tashkent",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(nowTick),
+    [nowTick, locale],
+  );
+
+  const dateParts = useMemo(() => {
+    const ymd = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tashkent",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(nowTick));
+    const p = parseYmd(ymd);
+    if (!p) {
+      return { weekday: "", dayMonth: ymd, year: "", label: ymd };
+    }
+    const week = t(WD_KEYS[weekdayIndex(p.y, p.m, p.d)]!);
+    const month = t(MONTH_KEYS[p.m - 1]!);
+    const weekday = `${week[0]!.toUpperCase()}${week.slice(1)}`;
+    const dayMonth = `${p.d} ${month}`;
+    return {
+      weekday,
+      dayMonth,
+      year: String(p.y),
+      label: `${weekday}, ${dayMonth} ${p.y}`,
+    };
+  }, [nowTick, t]);
+  const dateLabel = dateParts.label;
+
+  const distance = useMemo(() => {
+    if (!gps) return null;
+    return haversineMeters(gps.lat, gps.lng, site.latitude, site.longitude);
+  }, [gps, site.latitude, site.longitude]);
+
+  const allowedMeters = workplace?.allowedMeters || site.allowedMeters || DAVOMAT_GEOFENCE_METERS;
+  /** GPS shovqin / aniqlik — chegarada «Yana 0 m» deb yolg‘on tashqari ko‘rsatmaslik */
+  const geofenceSlackM = Math.min(
+    25,
+    Math.max(8, Math.round(((gps?.accuracy && gps.accuracy > 0 ? gps.accuracy : 15) * 0.35))),
+  );
+  const effectiveAllowedM = allowedMeters + geofenceSlackM;
+  const remain = distance != null ? Math.max(0, distance - effectiveAllowedM) : null;
+  /** Filial GPS yo‘q bo‘lsa ofis nuqtasiga tushib «Hududdasiz» deb yolg‘on yashil ko‘rsatilmasin */
+  const workplaceGpsMissing = workplace?.employee.hasGps === false;
+  /** Smena/filial tayyor emas — alohida xabar; geografik «inside» bilan aralashtirilmasin */
+  const gpsNotReady = workplace?.gpsReady === false;
+  const workplaceGateBlocked = workplaceGpsMissing || gpsNotReady;
+  /**
+   * Faqat masofa. Avval gpsReady/hasGps bilan AND qilinganda hudud ichida
+   * (qolgan 0 m) bo‘lsa ham «Hududdan tashqaridasiz» chiqardi.
+   */
+  const gpsLive = gps?.at != null && nowTick - gps.at <= 45_000;
+  const geoInside =
+    gpsLive &&
+    distance != null &&
+    (distance <= effectiveAllowedM || Math.round(Math.max(0, distance - allowedMeters)) <= 0);
+  const inside = !workplaceGateBlocked && geoInside;
+  /** Admin ko‘chma ruxsat — yashil zonadan tashqarida ham davomat */
+  const mobileAnywhere = Boolean(workplace?.mobileAnywhere);
+  const geoOk = adminQrAnywhere || mobileAnywhere || geoInside;
+  /** Hudud tasdiqi — faqat o‘z yashil hududi. Ko‘chma ruxsat hisobga olinmaydi. */
+  const zoneGeoOk = gpsLive && geoInside && !workplaceGateBlocked;
+  /** Xarita: geografik hudud yoki ko‘chma/admin — «hududda» */
+  const mapInside = geoInside || mobileAnywhere || adminQrAnywhere;
+
+  const nextAction = verified?.nextAction || workplace?.today.nextAction || "in";
+  // 2-filial: 1-smena Ketdi bo‘lsa ham nextAction="in" — kun yopilmagan
+  const done = nextAction === "done";
+  const hasIn = nextAction === "out" || (done && Boolean(checkInAtIso));
+  const shiftEndHm =
+    workplace?.shift?.end ||
+    (user?.role ? workShiftForUserRole(user.role).end : null) ||
+    "18:00";
+  const shiftStartHm =
+    workplace?.shift?.start ||
+    (user?.role ? workShiftForUserRole(user.role).start : null) ||
+    "08:00";
+  const shiftOvernight =
+    workplace?.shift?.overnight ??
+    (user?.role ? Boolean(workShiftForUserRole(user.role).overnight) : false);
+  /** Smena tugaganmi — workDate + end (yarim tun o‘tsa ham to‘g‘ri; 2-smena 23:45 → 00:10 OK) */
+  const shiftEndAtMs = (() => {
+    let endMs = shiftEndMs(workDateYmd, shiftEndHm, shiftOvernight);
+    const startHm = /^\d{1,2}:\d{2}$/.test(shiftStartHm) ? shiftStartHm : "08:00";
+    const startMs = new Date(`${workDateYmd}T${startHm}:00+05:00`).getTime();
+    if (endMs <= startMs) endMs = shiftEndMs(workDateYmd, shiftEndHm, true);
+    return endMs;
+  })();
+  const afterShiftEnd = nowTick >= shiftEndAtMs;
+  /** Keldimdan keyin Ketdim muddatgacha ochiq (2→02:00, 3→10:00, 1→23:55) */
+  const afterCheckoutDeadline = (() => {
+    const iso = workplace?.shift?.checkoutDeadlineAt;
+    if (iso) {
+      const t = Date.parse(iso);
+      if (Number.isFinite(t)) return nowTick > t;
+    }
+    return (
+      nowTick >
+      checkoutDeadlineMs(workDateYmd, shiftEndHm, shiftOvernight, {
+        shiftType: workplace?.shift?.type,
+        shiftKeys: workplace?.shift?.keys,
+      })
+    );
+  })();
+  const checkoutDeadlineHmLabel = checkoutDeadlineLabel({
+    shiftType: workplace?.shift?.type,
+    shiftKeys: workplace?.shift?.keys,
+    overnight: shiftOvernight,
+    explicitHm: workplace?.shift?.checkoutDeadlineHm,
+  });
+
+  /**
+   * Face ID skani davomat profilini aniqlaydi (tizim login emas).
+   * faceRegistered === false kutish — status 401 bo‘lsa tugma abadiy yopiq qolardi.
+   */
+  /** Face ID: barcha xodimlar — enroll bo‘lmasa ham tugma ochilsin */
+  const zoneLocked = workplace?.zonePresence?.status === "blocked";
+  const zoneDue = workplace?.zonePresence?.status === "due";
+  const canOpenFace =
+    !zoneLocked &&
+    faceMethodAllowed &&
+    methodsReady &&
+    cameraGranted &&
+    Boolean(gps) &&
+    !gpsError &&
+    isFaceIdSupported() &&
+    geoOk &&
+    !done;
+
+  /** QR: koordinator uchun o‘chirilgan; boshqalar — GPS + zona */
+  const canOpenQr =
+    !zoneLocked &&
+    qrMethodAllowed &&
+    methodsReady &&
+    cameraGranted &&
+    !done &&
+    (adminQrAnywhere || mobileAnywhere || (Boolean(gps) && !gpsError && inside));
+
+  /** Barmoq izi: kamera kerak emas — GPS + hudud yetarli */
+  const canOpenFinger =
+    !zoneLocked &&
+    fingerAllowed &&
+    methodsReady &&
+    !done &&
+    (adminQrAnywhere || mobileAnywhere || (Boolean(gps) && !gpsError && geoOk));
+
+  /** Face ID | QR — QR yo‘q bo‘lsa faqat Face */
+  const showDualMethods = methodsReady && (qrMethodAllowed || fingerAllowed);
+
+  const fingerAssertionSet = Boolean(verified?.fingerAssertion);
+  useEffect(() => {
+    if (!fingerAssertionSet) return;
+    const timer = window.setTimeout(() => {
+      setVerified((v) => (v?.fingerAssertion ? { ...v, fingerAssertion: undefined } : v));
+      setMethodHint((h) => (h === "FINGERPRINT" ? null : h));
+      toast({
+        title: "Barmoq izi tasdig‘i muddati tugadi",
+        description: "Xavfsizlik uchun tasdiq 2 daqiqa amal qiladi. «Davom etish»ni bosib qayta tasdiqlang.",
+      });
+    }, 110_000);
+    return () => window.clearTimeout(timer);
+  }, [fingerAssertionSet, toast]);
+
+  const faceVerifiedReady = Boolean(verified?.descriptor && verified.descriptor.length > 0);
+  const qrVerifiedReady = Boolean(verified?.qrPayload);
+  const fingerVerifiedReady = Boolean(verified?.fingerAssertion);
+  const methodReady = faceVerifiedReady || qrVerifiedReady || fingerVerifiedReady;
+
+  const fingerHint = !fingerAllowed || fingerStatus?.enabled !== true
+    ? undefined
+    : !fingerprintSupported()
+      ? "Brauzerda oching"
+      : !fingerStatus.enrolled
+        ? "Avval ro‘yxatdan o‘tkazing"
+        : !fingerStatus.thisDevice
+          ? "Boshqa qurilmaga biriktirilgan"
+          : "Barmoqni skanerga qo‘ying";
+
+  const openFingerMethod = useCallback(async () => {
+    if (busy || fingerScanning || faceVerifiedReady || qrVerifiedReady) return;
+    if (!canOpenFinger || fingerStatus?.enabled !== true) return;
+    if (!fingerprintSupported()) {
+      toast({
+        title: "Barmoq izi ishlamaydi",
+        description: isTgMiniApp
+          ? "Telegram ichida barmoq izi ishlamaydi. Saytni Chrome yoki Safari brauzerida oching."
+          : "Bu brauzer barmoq izini qo‘llamaydi. Chrome yoki Safari brauzerida oching.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!fingerStatus.enrolled) {
+      setFingerEnrollOpen(true);
+      return;
+    }
+    if (!fingerStatus.thisDevice) {
+      toast({
+        title: "Boshqa qurilma",
+        description: `Barmoq izingiz ${fingerStatus.deviceLabel ? `«${fingerStatus.deviceLabel}»` : "boshqa qurilma"}ga biriktirilgan. Faqat o‘sha qurilmadan davomat qila olasiz. Telefon almashgan bo‘lsa — admin bilan bog‘laning.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    setMethodHint(null);
+    setScanOpen(false);
+    setQrOpen(false);
+    setFingerScanning(true);
+    try {
+      const assertion = await captureFingerprintAssertion();
+      const action = (verified?.nextAction || workplace?.today.nextAction || "in") as "in" | "out" | "done";
+      setMethodHint("FINGERPRINT");
+      setVerified({
+        descriptor: [],
+        fingerAssertion: assertion,
+        fullName: workplace?.employee.fullName || user?.fullName || t("davomat.employee"),
+        nextAction: action === "out" ? "out" : action === "done" ? "done" : "in",
+        checkIn: workplace?.today.checkIn || "—",
+        checkOut: workplace?.today.checkOut || "—",
+        checkInAt: workplace?.today.checkInAt || null,
+        checkOutAt: workplace?.today.checkOutAt || null,
+      });
+      toast({
+        title: "✓ Barmoq izi tasdiqlandi",
+        description: action === "out" ? "Endi «Ketdim» ni bosing" : "Endi «Keldim» ni bosing",
+      });
+    } catch (err) {
+      toast({
+        title: "Barmoq izi",
+        description: (err as Error)?.message || "Tasdiqlanmadi — qayta urinib ko‘ring",
+        variant: "destructive",
+      });
+      if (err instanceof DavomatApiError && (err.code === "finger_not_enrolled" || err.code === "finger_wrong_device")) {
+        void fetchFingerprintStatus().then(setFingerStatus).catch(() => undefined);
+      }
+    } finally {
+      setFingerScanning(false);
+    }
+  }, [
+    busy,
+    fingerScanning,
+    faceVerifiedReady,
+    qrVerifiedReady,
+    canOpenFinger,
+    fingerStatus,
+    isTgMiniApp,
+    toast,
+    verified?.nextAction,
+    workplace,
+    user?.fullName,
+    t,
+  ]);
+
+  const openFaceMethod = useCallback(() => {
+    if (busy || qrVerifiedReady || fingerVerifiedReady) return;
+    if (!canOpenFace) return;
+    preloadFaceModels();
+    setMethodHint(null);
+    setQrOpen(false);
+    if (faceRegistered === false) setEnrollOpen(true);
+    else setScanOpen(true);
+  }, [canOpenFace, busy, faceRegistered, qrVerifiedReady, fingerVerifiedReady]);
+
+  const openQrMethod = useCallback(() => {
+    if (busy || faceVerifiedReady) {
+      if (!cameraGranted && !faceVerifiedReady) {
+        toast({
+          title: t("davomat.permsCamBlockedTitle"),
+          description: t("davomat.permsNeedBtn"),
+          variant: "destructive",
+        });
+      }
+      return;
+    }
+    if (!canOpenQr) return;
+    setMethodHint(null);
+    setScanOpen(false);
+    setEnrollOpen(false);
+    // Dialog darhol — kamera ichida ochiladi (ketma-ket getUserMedia kutmasin)
+    setQrStream(null);
+    setQrOpen(true);
+  }, [canOpenQr, busy, faceVerifiedReady, cameraGranted, toast, t]);
+
+  const guideStep = useMemo((): GuideStep => {
+    if (done) return "done";
+    if (!showDualMethods && faceRegistered === false) return "enroll";
+    // Face/QR uchun kamera majburiy (admin ham)
+    if (showDualMethods && !cameraGranted) return "permission";
+    if (!adminQrAnywhere && (!gps || gpsError)) return "permission";
+    if (!adminQrAnywhere && !mobileAnywhere && !geoInside) return "zone";
+    if (showDualMethods) {
+      // Apteka/ofis/admin: avval Face ID yoki QR; tasdiqdan keyin Keldim/Ketdim
+      if (!hasIn && !methodReady) return "face";
+      if (!hasIn) return "keldim";
+      return "ketdim";
+    }
+    if (!gps || gpsError) return "permission";
+    if (!mobileAnywhere && !geoInside) return "zone";
+    if (!verified) return "face";
+    if (!hasIn) return "keldim";
+    return "ketdim";
+  }, [
+    done,
+    faceRegistered,
+    gps,
+    gpsError,
+    geoInside,
+    mobileAnywhere,
+    verified,
+    hasIn,
+    showDualMethods,
+    adminQrAnywhere,
+    methodReady,
+    cameraGranted,
+  ]);
+
+  /** Mobil: doim aktiv qadamni ko‘rsat; desktopda ham panel ochiq */
+  const showGuide = guideStep !== "done";
+
+  const todayStatus = done
+    ? "complete"
+    : hasIn
+      ? workplace?.today.status || "present"
+      : gpsError
+        ? "no_gps"
+        : !gps
+          ? "waiting_gps"
+          : inside
+            ? "inside"
+            : "outside";
+
+  const holatLabel =
+    todayStatus === "complete"
+      ? t("davomat.closedToday")
+      : hasIn
+        ? t(STATUS_KEYS[workplace?.today.status || "present"] || "davomat.arrived")
+        : todayStatus === "inside"
+          ? t("davomat.inside")
+          : todayStatus === "outside"
+            ? t("davomat.outside")
+            : todayStatus === "no_gps"
+              ? t("davomat.noLocation")
+              : t("davomat.waitingGps");
+
+  const faceLockedReason = useMemo(() => {
+    if (faceRegistered === false) return t("davomat.needFace");
+    if (gpsError) return gpsError;
+    if (!gps) return t("davomat.step1Grant");
+    if (!isFaceIdSupported()) return t("davomat.faceUnsupported");
+    if (workplaceGpsMissing || workplace?.gpsReady === false) {
+      return (
+        workplace?.gpsError ||
+        t("davomat.branchGpsMissingHint")
+      );
+    }
+    if (remain != null && remain > 0) {
+      return tr(t, "davomat.notInZoneDetail", {
+        dist: formatDistance(distance, t),
+        approach: formatApproach(remain, t),
+      });
+    }
+    return null;
+  }, [
+    faceRegistered,
+    gps,
+    gpsError,
+    remain,
+    distance,
+    workplaceGpsMissing,
+    workplace?.gpsError,
+    workplace?.gpsReady,
+    t,
+  ]);
+
+  useEffect(() => {
+    if (!isTgMiniApp || tgBootRef.current) return;
+    tgBootRef.current = true;
+    void requestLocationPermission();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTgMiniApp]);
+
+  /** Faqat ofis (Face-only): TG da avtomatik Face ochilsin. Apteka/admin dual — hech qachon. */
+  useEffect(() => {
+    if (!isTgMiniApp || !methodsReady || showDualMethods) return;
+    if (tgScanRef.current || done || verified || faceRegistered === false) return;
+    if (canOpenFace) {
+      tgScanRef.current = true;
+      setScanOpen(true);
+    }
+  }, [isTgMiniApp, methodsReady, showDualMethods, canOpenFace, done, verified, faceRegistered]);
+
+  /** Dual method: avvalgi ofis/TG Face auto-open qolmasin (bir marta). */
+  useEffect(() => {
+    if (!methodsReady || !showDualMethods || pharmacyGateRef.current) return;
+    pharmacyGateRef.current = true;
+    setScanOpen(false);
+    setEnrollOpen(false);
+    setQrOpen(false);
+  }, [methodsReady, showDualMethods]);
+
+  const geoPayload = () => {
+    if (!gps) throw new Error(t("davomat.gpsMissing"));
+    return { latitude: gps.lat, longitude: gps.lng, accuracy: gps.accuracy };
+  };
+
+  const saveFaceImage = (snap?: string) => {
+    if (!snap) return;
+    setFaceImage(snap);
+    try {
+      sessionStorage.setItem(FACE_SNAP_KEY, snap);
+    } catch {
+      /* ignore quota */
+    }
+  };
+
+  const adoptRecognizedProfile = useCallback(
+    (sessionUser: User | null | undefined, fullName: string) => {
+      if (!sessionUser?.id) return;
+      switchToUser(sessionUser as User);
+      toast({
+        title: fullName || sessionUser.fullName,
+        description: t("davomat.faceRecognized"),
+      });
+    },
+    [switchToUser, toast, t],
+  );
+
+  const onCaptured = async (
+    descriptor: number[] | number[][],
+    snapshot?: string,
+    liveness?: { blinked?: boolean; poses?: string[]; motion?: number; score?: number },
+  ) => {
+    if (!gps) throw new Error(t("davomat.gpsMissing"));
+    if (zoneConfirmRef.current) {
+      if (!zoneGeoOk) throw new Error("Sizga belgilangan yashil hududda emassiz. Tashqaridan tasdiq qabul qilinmaydi.");
+      const list = (Array.isArray(descriptor[0]) ? descriptor : [descriptor]) as number[][];
+      const vec = list[0]!;
+      const photo =
+        snapshot?.startsWith("data:image/")
+          ? (await compressFaceSnapshotAsync(snapshot, 640, 0.82)) || snapshot
+          : snapshot;
+      await confirmZonePresence({
+        method: "FACE_ID",
+        descriptor: vec,
+        snapshot: photo,
+        latitude: gps.lat,
+        longitude: gps.lng,
+        accuracy: gps.accuracy,
+        gpsCapturedAt: gps.at,
+      });
+      zoneConfirmRef.current = false;
+      setScanOpen(false);
+      toast({
+        title: "Tasdiqlandi",
+        description: "Yashil hududda ekanligingiz qabul qilindi.",
+      });
+      void loadWorkplace();
+      return { fullName: user?.fullName || "" };
+    }
+    if (!geoOk) {
+      throw new Error(
+        tr(t, "davomat.outsideThrow", {
+          dist: formatDistance(distance, t),
+          remain: formatDistance(remain, t),
+        }),
+      );
+    }
+    try {
+      const list = (Array.isArray(descriptor[0]) ? descriptor : [descriptor]) as number[][];
+      const vec = list[0]!;
+      const photo =
+        snapshot?.startsWith("data:image/")
+          ? (await compressFaceSnapshotAsync(snapshot, 640, 0.82)) || snapshot
+          : snapshot;
+      const result = await faceVerifyDavomat({
+        descriptor: vec,
+        descriptors: list,
+        snapshot: photo,
+        liveness,
+        ...geoPayload(),
+      });
+      saveFaceImage(photo);
+      setMethodHint("FACE_ID");
+      setScanOpen(false);
+      setQrOpen(false);
+      setVerified({
+        descriptor: vec,
+        fullName: result.fullName,
+        nextAction: result.nextAction,
+        checkIn: result.checkIn,
+        checkOut: result.checkOut,
+        checkInAt: result.checkInAt,
+        checkOutAt: result.checkOutAt,
+        faceImage: photo,
+        liveness,
+      });
+      applyHistory(result.employee);
+      if (result.user) {
+        if (result.ownerVerified) {
+          toast({
+            title: result.fullName,
+            description: t("davomat.faceOwnerOk"),
+          });
+          void loadWorkplace();
+          void loadHistory();
+        } else {
+          adoptRecognizedProfile(result.user as User, result.fullName);
+          void loadWorkplace();
+          void loadHistory();
+        }
+      } else {
+        toast({
+          title: result.fullName,
+          description:
+            result.nextAction === "done"
+              ? t("davomat.alreadyBoth")
+              : result.nextAction === "out"
+                ? t("davomat.alreadyInOnlyOut")
+                : t("davomat.faceOkPressIn"),
+        });
+      }
+      return { fullName: result.fullName };
+    } catch (err) {
+      if (err instanceof DavomatApiError && err.code === "face_not_owner") {
+        const msg =
+          err.message ||
+          (err.fullName
+            ? tr(t, "davomat.notPerson", { name: err.fullName })
+            : t("davomat.faceNotOwner"));
+        toast({ title: t("davomat.wrongPerson"), description: msg, variant: "destructive" });
+        throw new Error(msg);
+      }
+      if (err instanceof DavomatApiError && err.code === "outside_geofence") {
+        if (
+          err.workplace &&
+          typeof err.workplace.latitude === "number" &&
+          typeof err.workplace.longitude === "number"
+        ) {
+          setSite({
+            allowedMeters: err.allowedMeters || DAVOMAT_GEOFENCE_METERS,
+            label: err.workplace.location || site.label,
+            latitude: err.workplace.latitude,
+            longitude: err.workplace.longitude,
+          });
+        }
+        const text =
+          err.remainMeters != null && err.remainMeters < 1000
+            ? formatApproach(err.remainMeters, t)
+            : err.distanceMeters != null
+              ? tr(t, "davomat.outsideFar", {
+                  dist: formatDistance(err.distanceMeters, t),
+                  approach: formatApproach(err.remainMeters, t),
+                })
+              : err.message || t("davomat.outsideTitle");
+        toast({ title: t("davomat.outsideTitle"), description: text, variant: "destructive" });
+        throw new Error(text);
+      }
+      if (err instanceof DavomatApiError && err.code === "branch_gps_missing") {
+        toast({ title: t("davomat.needGps"), description: err.message, variant: "destructive" });
+        throw err;
+      }
+      throw err;
+    }
+  };
+
+  /** Keldim/Ketdim: yangi aniq nuqta bo‘lsa darhol, aks holda yangi o‘lchovni kutamiz */
+  const punchGps = async () => {
+    type Fix = { lat: number; lng: number; accuracy: number; capturedAt: number };
+    const fresh = (r: Fix | null, maxAgeMs: number, maxAccM: number): r is Fix =>
+      Boolean(r) && Date.now() - r!.capturedAt <= maxAgeMs && r!.accuracy <= maxAccM;
+    const now = rawGpsRef.current;
+    if (fresh(now, 8_000, 80)) return now;
+    try {
+      const measured = await readLivePunchGps();
+      const latest = rawGpsRef.current;
+      return fresh(latest, 15_000, measured.accuracy - 1) ? latest : measured;
+    } catch (err) {
+      const latest = rawGpsRef.current;
+      if (fresh(latest, 30_000, 250)) return latest;
+      throw err;
+    }
+  };
+
+  const punch = async (action: "in" | "out", opts?: { notes?: string }) => {
+    if (workplace?.zonePresence?.status === "blocked") {
+      toast({
+        title: "Bugun bloklandi",
+        description: workplace.zonePresence.message || "Muammo bo‘lsa admin bilan bog‘laning. Ruxsat berguncha Keldim va Ketdim yopiq.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!verified) return;
+    const usingQr = Boolean(verified.qrPayload) || methodHint === "QR";
+    if (punchLockRef.current || busy) return;
+    if (action === "out" && afterCheckoutDeadline) {
+      toast({
+        title: t("common.error"),
+        description: `${checkoutDeadlineHmLabel} gacha «Ketdim» bosilmadi — bugun kelmagan deb yopiladi. Kelish vaqti jadvalda saqlanadi.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    const earlyNotes =
+      action === "out" && !afterShiftEnd ? String(opts?.notes || earlyLeaveNote || "").trim() : "";
+    if (action === "out" && !afterShiftEnd && earlyNotes.length < 3) {
+      toast({
+        title: t("common.error"),
+        description: "Nega bugungi vaqtdan oldin ketayapsiz? Qisqa izoh yozing.",
+        variant: "destructive",
+      });
+      return;
+    }
+    punchLockRef.current = true;
+    setBusy(true);
+    const unlock = () => {
+      punchLockRef.current = false;
+      setBusy(false);
+      setConfirmOut(false);
+      setEarlyLeaveNote("");
+    };
+    const refreshQuiet = () => {
+      void Promise.all([loadWorkplace(), loadHistory()]);
+    };
+    let live: { lat: number; lng: number; accuracy: number; capturedAt: number } | null = null;
+    const mustBeOnSite = !adminQrAnywhere && !mobileAnywhere;
+    if (mustBeOnSite) {
+      try {
+        live = await punchGps();
+      } catch {
+        toast({
+          title: "Joylashuv qabul qilinmadi",
+          description:
+            "GPS o‘chiq yoki eskirgan. Keldim va Ketdim faqat belgilangan hududda, joylashuv yoqilgan paytda qabul qilinadi.",
+          variant: "destructive",
+        });
+        unlock();
+        return;
+      }
+    } else {
+      try {
+        live = await punchGps();
+      } catch {
+        live = gps
+          ? { lat: gps.lat, lng: gps.lng, accuracy: gps.accuracy, capturedAt: gps.at || Date.now() }
+          : null;
+      }
+    }
+    if (live) {
+      setGps((prev) => ({
+        lat: live!.lat,
+        lng: live!.lng,
+        accuracy: live!.accuracy,
+        at: live!.capturedAt,
+        heading: prev?.heading ?? null,
+        speed: null,
+      }));
+    }
+    try {
+      if (verified.fingerAssertion) {
+        if (!live) {
+          toast({
+            title: "Joylashuv qabul qilinmadi",
+            description: "GPS o‘chiq yoki eskirgan. Hududda turib, joylashuv yoqilgan holda qayta bosing.",
+            variant: "destructive",
+          });
+          unlock();
+          return;
+        }
+        const assertion = verified.fingerAssertion;
+        // Bir martalik tasdiq — natijadan qat'i nazar qayta ishlatilmaydi
+        setVerified({ ...verified, fingerAssertion: undefined });
+        let result: Awaited<ReturnType<typeof fingerprintPunchDavomat>>;
+        try {
+          result = await fingerprintPunchDavomat({
+            assertion,
+            latitude: live.lat,
+            longitude: live.lng,
+            accuracy: live.accuracy,
+            gpsCapturedAt: live.capturedAt,
+            action,
+            ...(checklistBranchId ? { branchId: checklistBranchId } : {}),
+            ...(earlyNotes ? { notes: earlyNotes } : {}),
+          });
+        } catch (err) {
+          if (err instanceof DavomatApiError && err.code?.startsWith("finger_")) {
+            setMethodHint(null);
+            toast({ title: "Barmoq izi", description: err.message, variant: "destructive" });
+            if (err.code === "finger_wrong_device" || err.code === "finger_not_enrolled") {
+              void fetchFingerprintStatus().then(setFingerStatus).catch(() => undefined);
+            }
+            unlock();
+            return;
+          }
+          throw err;
+        }
+        const resultNext =
+          result.nextAction === "in" || result.nextAction === "out" || result.nextAction === "done"
+            ? result.nextAction
+            : action === "in"
+              ? "out"
+              : "done";
+        setMethodHint(null);
+        setVerified({
+          ...verified,
+          fingerAssertion: undefined,
+          nextAction: resultNext,
+          checkIn: result.checkIn,
+          checkOut: result.checkOut,
+          checkInAt: result.checkInAt ?? (resultNext === "in" ? null : verified.checkInAt),
+          checkOutAt: result.checkOutAt ?? (resultNext === "in" ? null : verified.checkOutAt),
+        });
+        toast({
+          title: action === "in" ? "✓ Keldim (barmoq izi)" : "✓ Ketdim (barmoq izi)",
+          description: result.checklistHint || result.message || "Davomat qayd etildi",
+        });
+        applyHistory(result.employee);
+        syncMobileRoute(action);
+        unlock();
+        refreshQuiet();
+        if (action === "in") {
+          const visit = result.coordinatorVisit as
+            | { isOffice?: boolean; visitKind?: string; branchId?: number }
+            | null
+            | undefined;
+          const toOffice =
+            result.ofisdaRedirect || visit?.isOffice || visit?.visitKind === "office" || Number(visit?.branchId) === 0;
+          if (toOffice) {
+            window.setTimeout(() => setLocation("/davomat/ofisda"), 450);
+          } else if (checklistBranchId || result.checklistRedirect || result.coordinatorVisit) {
+            window.setTimeout(() => setLocation("/checklist"), 450);
+          }
+        }
+        return;
+      }
+
+      if (usingQr && verified.qrPayload) {
+        const result = await qrPunchDavomat({
+          payload: verified.qrPayload,
+          ...(live
+            ? {
+                latitude: live.lat,
+                longitude: live.lng,
+                accuracy: live.accuracy,
+                gpsCapturedAt: live.capturedAt,
+              }
+            : {}),
+          action,
+          ...(earlyNotes ? { notes: earlyNotes } : {}),
+        });
+        // Har bir Keldim/Ketdim uchun yangi skan — eski tasdiq qayta ishlatilmaydi
+        setMethodHint(null);
+        setScanOpen(false);
+        setQrOpen(false);
+        setVerified({
+          ...verified,
+          descriptor: [],
+          qrPayload: undefined,
+          nextAction: action === "in" ? "out" : "done",
+          checkIn: result.checkIn,
+          checkOut: result.checkOut,
+          checkInAt: result.checkInAt ?? verified.checkInAt,
+          checkOutAt: result.checkOutAt ?? verified.checkOutAt,
+        });
+        toast({
+          title: action === "in" ? "✓ Keldim (QR)" : "✓ Ketdim (QR)",
+          description: result.branchLabel
+            ? `${result.message || "Qabul qilindi"} · ${result.branchLabel}`
+            : result.message || "Davomat qayd etildi",
+        });
+        applyHistory(result.employee);
+        syncMobileRoute(action);
+        unlock();
+        refreshQuiet();
+        return;
+      }
+
+      if (!live) {
+        toast({
+          title: "Joylashuv qabul qilinmadi",
+          description:
+            "GPS o‘chiq yoki eskirgan. Keldim va Ketdim faqat belgilangan hududda, joylashuv yoqilgan paytda qabul qilinadi.",
+          variant: "destructive",
+        });
+        unlock();
+        return;
+      }
+      const snap =
+        (verified.faceImage?.startsWith("data:image/") ? verified.faceImage : null) ||
+        (faceImage?.startsWith("data:image/") ? faceImage : null) ||
+        undefined;
+      if (!snap) {
+        toast({
+          title: t("common.error"),
+          description: "Yuz rasmi yo‘q — Face ID ni qayta skanerlang, keyin Keldim/Ketdim bosing",
+          variant: "destructive",
+        });
+        unlock();
+        setScanOpen(true);
+        return;
+      }
+      const result = await facePunchDavomat({
+        descriptor: verified.descriptor,
+        latitude: live.lat,
+        longitude: live.lng,
+        accuracy: live.accuracy,
+        gpsCapturedAt: live.capturedAt,
+        action,
+        snapshot: snap,
+        liveness: verified.liveness,
+        ...(checklistBranchId ? { branchId: checklistBranchId } : {}),
+        ...(earlyNotes ? { notes: earlyNotes } : {}),
+      });
+      const resultNext =
+        result.nextAction === "in" || result.nextAction === "out" || result.nextAction === "done"
+          ? result.nextAction
+          : action === "in"
+            ? "out"
+            : "done";
+      setVerified({
+        ...verified,
+        descriptor: [],
+        liveness: undefined,
+        faceImage: snap,
+        nextAction: resultNext,
+        checkIn: result.checkIn,
+        checkOut: result.checkOut,
+        checkInAt: result.checkInAt ?? (resultNext === "in" ? null : verified.checkInAt),
+        checkOutAt: result.checkOutAt ?? (resultNext === "in" ? null : verified.checkOutAt),
+      });
+      setMethodHint(null);
+      setScanOpen(false);
+      if (result.user) {
+        adoptRecognizedProfile(result.user as User, result.fullName || verified.fullName);
+      }
+      toast({
+        title: action === "in" ? t("davomat.btnIn") : t("davomat.leftToast"),
+        description: result.checklistHint || result.message,
+      });
+      applyHistory(result.employee);
+      syncMobileRoute(action);
+      unlock();
+      refreshQuiet();
+      // Cheklist / ofis oqimi: Keldim → tegishli bo‘lim
+      if (action === "in") {
+        const visit = result.coordinatorVisit as
+          | { isOffice?: boolean; visitKind?: string; branchId?: number }
+          | null
+          | undefined;
+        const toOffice =
+          result.ofisdaRedirect ||
+          visit?.isOffice ||
+          visit?.visitKind === "office" ||
+          Number(visit?.branchId) === 0;
+        if (toOffice) {
+          window.setTimeout(() => setLocation("/davomat/ofisda"), 450);
+        } else if (checklistBranchId || result.checklistRedirect || result.coordinatorVisit) {
+          window.setTimeout(() => setLocation("/checklist"), 450);
+        }
+      }
+    } catch (err) {
+      if (
+        err instanceof DavomatApiError &&
+        err.code === "early_leave_note_required"
+      ) {
+        unlock();
+        setConfirmOut(true);
+        toast({
+          title: t("common.error"),
+          description: err.message || "Erta ketish uchun izoh yozing",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (
+        err instanceof DavomatApiError &&
+        (err.code === "already_in" || err.code === "already_complete")
+      ) {
+        setVerified({
+          ...verified,
+          nextAction: err.code === "already_complete" ? "done" : "out",
+          checkIn: err.checkIn || verified.checkIn,
+          checkOut: err.checkOut || verified.checkOut,
+          checkInAt: err.checkInAt || verified.checkInAt,
+          checkOutAt: err.checkOutAt || verified.checkOutAt,
+        });
+        toast({ title: t("davomat.alreadyMarked"), description: err.message });
+        unlock();
+        refreshQuiet();
+        return;
+      }
+      if (err instanceof DavomatApiError && err.code === "checkout_window_closed") {
+        setVerified({
+          ...verified,
+          nextAction: "done",
+          checkIn: err.checkIn || verified.checkIn,
+          checkOut: err.checkOut || "—",
+          checkInAt: err.checkInAt || verified.checkInAt,
+          checkOutAt: null,
+        });
+      toast({
+          title: "Kun yopildi",
+          description: err.message,
+          variant: "destructive",
+        });
+        unlock();
+        refreshQuiet();
+        return;
+      }
+      if (err instanceof DavomatApiError && err.code === "zone_blocked") {
+        toast({
+          title: "Bugun bloklandi",
+          description: err.message || "Muammo bo‘lsa admin bilan bog‘laning. Ruxsat berguncha Keldim va Ketdim yopiq.",
+          variant: "destructive",
+        });
+        unlock();
+        void loadWorkplace();
+        return;
+      }
+      if (err instanceof DavomatApiError && err.code === "method_forbidden") {
+        toast({ title: "Aynan sizga ruxsat yo‘q", variant: "destructive" });
+        unlock();
+        return;
+      }
+      if (
+        err instanceof DavomatApiError &&
+        (err.code === "outside_geofence" ||
+          err.code === "gps_stale" ||
+          err.code === "gps_required" ||
+          err.code === "gps_inaccurate")
+      ) {
+        toast({
+          title: err.code === "outside_geofence" ? "Hududdan tashqaridasiz" : "Joylashuv qabul qilinmadi",
+          description:
+            err.code === "outside_geofence"
+              ? err.message || "Keldim va Ketdim faqat belgilangan hududda qabul qilinadi."
+              : err.code === "gps_inaccurate"
+                ? err.message
+                : "GPS o‘chiq yoki eskirgan. Hududda turib, joylashuv yoqilgan holda qayta bosing.",
+          variant: "destructive",
+        });
+        unlock();
+        return;
+      }
+      toast({
+        title: t("common.error"),
+        description: (err as Error)?.message,
+        variant: "destructive",
+      });
+    } finally {
+      if (punchLockRef.current) unlock();
+    }
+  };
+
+  const onQrDetected = useCallback(
+    async (payload: string) => {
+      if (zoneConfirmRef.current) {
+        if (!gps) throw new Error(t("davomat.gpsMissing"));
+        if (!zoneGeoOk) throw new Error("Sizga belgilangan yashil hududda emassiz. Tashqaridan tasdiq qabul qilinmaydi.");
+        await confirmZonePresence({
+          method: "QR",
+          qrPayload: payload.trim(),
+          latitude: gps.lat,
+          longitude: gps.lng,
+          accuracy: gps.accuracy,
+          gpsCapturedAt: gps.at,
+        });
+        zoneConfirmRef.current = false;
+        setQrOpen(false);
+        toast({
+          title: "Tasdiqlandi",
+          description: "Yashil hududda ekanligingiz qabul qilindi.",
+        });
+        void loadWorkplace();
+        return;
+      }
+      if (!adminQrAnywhere) {
+        if (!gps) throw new Error(t("davomat.gpsMissing"));
+        if (!geoOk) throw new Error(t("davomat.outside"));
+      }
+      const action = (verified?.nextAction || workplace?.today.nextAction || "in") as "in" | "out" | "done";
+      if (action === "done") throw new Error(t("davomat.oncePerDay"));
+      if (!qrMethodAllowed) throw new Error("Aynan sizga ruxsat yo‘q");
+      if (!payload.trim()) throw new Error("QR bo‘sh");
+
+      // QR skan = tasdiq. Face ID ochilmasin — keyin Keldim/Ketdim.
+      setScanOpen(false);
+      setEnrollOpen(false);
+      setQrOpen(false);
+      setMethodHint("QR");
+      setVerified({
+        descriptor: [],
+        qrPayload: payload.trim(),
+        fullName: workplace?.employee.fullName || user?.fullName || t("davomat.employee"),
+        nextAction: action === "out" ? "out" : "in",
+        checkIn: workplace?.today.checkIn || "—",
+        checkOut: workplace?.today.checkOut || "—",
+        checkInAt: workplace?.today.checkInAt || null,
+        checkOutAt: workplace?.today.checkOutAt || null,
+      });
+      toast({
+        title: "✓ QR scanner tasdiqlandi",
+        description: action === "out" ? "Endi «Ketdim» ni bosing" : "Endi «Keldim» ni bosing",
+      });
+    },
+    [adminQrAnywhere, gps, geoOk, zoneGeoOk, verified?.nextAction, workplace, user?.fullName, t, qrMethodAllowed, loadWorkplace, toast],
+  );
+
+  const displayName = formatPersonName(
+    verified?.fullName || workplace?.employee.fullName || user?.fullName || "",
+  );
+  const personName =
+    displayName && !/^(xodim|employee|user)$/i.test(displayName.trim()) ? displayName : "";
+  const displayShift = useMemo(() => {
+    if (workplace?.shift) return workplace.shift;
+    if (!user?.role) return null;
+    return workShiftForUserRole(user.role);
+  }, [workplace?.shift, user?.role]);
+  const workplaceTitle = useMemo(
+    () =>
+      workplaceDisplayTitle(
+        user?.role,
+        workplace?.site ?? (site.kind ? { kind: site.kind, label: site.label } : null),
+        workplace?.employee?.location,
+        {
+          mainOffice: t("davomat.mainOffice"),
+          branchUnset: t("davomat.branchUnset"),
+        },
+      ),
+    [user?.role, workplace?.site, workplace?.employee?.location, site.kind, site.label, t],
+  );
+  const position = roleLabel(user?.role) || t("davomat.employee");
+  const department = user?.departmentName;
+  const phone = user?.phone;
+  const shownFace = verified?.faceImage || faceImage;
+  const dayComplete = !verified && Boolean(workplace?.today.complete) && nextAction === "done";
+  const checkInLabel = verified?.checkIn || workplace?.today.checkIn || "—";
+  // 2-filial: 1-smena Ketdi bo‘lsa ham keyingi Keldim uchun ketishni yashiramiz
+  const checkOutLabel =
+    nextAction === "in" && !done
+      ? "—"
+      : verified?.checkOut || workplace?.today.checkOut || "—";
+  const closedWork = done
+    ? workedMinutesFromPunch({
+        checkIn: checkInLabel,
+        checkOut: checkOutLabel,
+        checkInAt: verified?.checkInAt || workplace?.today.checkInAt,
+        checkOutAt: verified?.checkOutAt || workplace?.today.checkOutAt,
+      })
+    : null;
+  const todayStamp =
+    workplace?.workDate ||
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tashkent",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(nowTick);
+
+  const salaryCard = useMemo(() => {
+    const days = oylikCard.data?.days ?? [];
+    const month = oylikCard.data?.month || cardMonth;
+    let dates: string[] = [];
+    let periodLabel = oylikCard.data?.monthLabel || month;
+    if (historyRange === "day") {
+      dates = [todayStamp];
+      periodLabel = `Kun · ${formatShortUz(todayStamp)}`;
+    } else if (historyRange === "week") {
+      const weeks = weeksOfMonth(month);
+      const week = weeks.find((item) => todayStamp >= item.from && todayStamp <= item.to) ?? weeks[0];
+      dates = week ? datesFromTo(week.from, week.to) : [];
+      periodLabel = week ? `Hafta · ${week.label}` : "Hafta";
+    } else {
+      dates = datesFromTo(`${month}-01`, monthEnd(month));
+      periodLabel = `Oy · ${oylikCard.data?.monthLabel || month}`;
+    }
+    const picked = days.filter((day) => dates.includes(day.date));
+    return {
+      periodLabel,
+      periodSalary: picked.reduce((sum, day) => sum + day.salary, 0),
+      periodJarima: picked.reduce((sum, day) => sum + day.jarima, 0),
+      lines: picked.filter((day) => day.jarima > 0).map((day) => ({ date: day.date, jarima: day.jarima, note: day.note })),
+    };
+  }, [oylikCard.data, cardMonth, historyRange, todayStamp]);
+
+  const filteredHistoryDays = useMemo(() => {
+    const sorted = sortDaysDesc(historyDays);
+    if (historyRange === "day") {
+      return sorted.filter((d) => d.date === todayStamp).slice(0, 1);
+    }
+    if (historyRange === "week") {
+      return sorted.slice(0, 7);
+    }
+    return sorted.slice(0, 31);
+  }, [historyDays, historyRange, todayStamp]);
+
+  const historySummary = useMemo(() => {
+    let present = 0;
+    let late = 0;
+    let absent = 0;
+    let minutes = 0;
+    for (const d of filteredHistoryDays) {
+      if (d.status === "present") present += 1;
+      else if (d.status === "late") late += 1;
+      else if (d.status === "absent") absent += 1;
+      const w =
+        d.checkIn !== "—" && d.checkOut !== "—"
+          ? workedMinutesFromPunch({ checkIn: d.checkIn, checkOut: d.checkOut })
+          : null;
+      if (w != null) minutes += w;
+      else if (typeof d.workedMinutes === "number") minutes += d.workedMinutes;
+    }
+    return { present, late, absent, minutes, count: filteredHistoryDays.length };
+  }, [filteredHistoryDays]);
+
+  const ringClass = inside
+    ? "ring-4 ring-teal-400/70"
+    : gps
+      ? "ring-4 ring-rose-400/60"
+      : "ring-4 ring-primary-foreground/25";
+
+  const locationReady = Boolean(gps) && inside && !gpsError && faceRegistered !== false;
+  const showFaceStep =
+    faceRegistered !== false &&
+    (locationReady || Boolean(verified) || Boolean(gps) || (hasIn && !done));
+  const showPunchStep =
+    Boolean(verified) &&
+    !done &&
+    !dayComplete &&
+    (faceVerifiedReady || qrVerifiedReady || fingerVerifiedReady || methodHint === "QR");
+
+  /** Usul tanlangach Face/QR tugmalari yashirinadi — faqat Keldim/Ketdim */
+  const showMethodPicker = showDualMethods && !done && !methodReady;
+  const canPunchOut = hasIn && !done && !afterCheckoutDeadline;
+
+  const onEnrollCaptured = async (
+    descriptor: number[] | number[][],
+    snapshot?: string,
+    liveness?: { blinked?: boolean; poses?: string[]; motion?: number; score?: number },
+  ) => {
+    await enrollFace(descriptor, snapshot, liveness);
+    setFaceRegistered(true);
+    saveFaceImage(snapshot);
+    toast({
+      title: t("davomat.enrollOk"),
+      description: t("davomat.enrollOkDesc"),
+    });
+    await refreshFaceStatus();
+  };
+
+  const roleLine = [position, workplaceTitle].filter(Boolean).join(" · ");
+  const dayPlanLine =
+    workplace?.dayPlan?.slots && workplace.dayPlan.slots.length > 0
+      ? workplace.dayPlan.slots
+          .map((s) => `${s.shiftLabel} → ${s.branchLabel || `#${s.branchId}`}${s.activeNow ? " ●" : ""}`)
+          .join(" · ")
+      : null;
+  /** Faqat barmoq izi tanlangan bo‘lsa kamera so‘ralmaydi */
+  const cameraNeeded =
+    selectedMethod === "FINGERPRINT" && fingerAllowed ? false : faceMethodAllowed || qrMethodAllowed || !fingerAllowed;
+  const needsPerms =
+    (cameraNeeded && !cameraGranted) || (!adminQrAnywhere && (!gps || Boolean(gpsError)));
+  /** Ruxsat rad etilgan — GPS xizmati o‘chiqligidan ajraladi */
+  const gpsPermissionDenied =
+    Boolean(gpsError) &&
+    /ruxsat berilmadi|ruxsat bermadingiz|bloklagan|permission denied|доступ к локации не дан|заблокировал/i.test(
+      gpsError || "",
+    );
+  /** Nuqta bor, lekin 45 soniyadan eski — GPS o‘chiq yoki yangilanmayapti */
+  const gpsStale =
+    !adminQrAnywhere &&
+    !mobileAnywhere &&
+    Boolean(gps) &&
+    !gpsError &&
+    !gpsLive;
+  /** GPS o‘chiq / olinmadi. Hududdan tashqari deb yozilmaydi. */
+  const gpsTurnOff =
+    !done &&
+    !adminQrAnywhere &&
+    !mobileAnywhere &&
+    (gpsStale || (Boolean(gpsError) && !gpsPermissionDenied));
+  const outsideZone =
+    !adminQrAnywhere &&
+    !mobileAnywhere &&
+    Boolean(gps) &&
+    !gpsError &&
+    gpsLive &&
+    !done &&
+    (!geoInside || workplaceGateBlocked);
+  const mapNeedsGps = !adminQrAnywhere && (!gps || Boolean(gpsError));
+  const gpsDenied = gpsPermissionDenied;
+  const addressHint =
+    dayPlanLine ||
+    workplace?.employee?.location ||
+    department ||
+    null;
+  const outsideWarn = mobileAnywhere
+    ? "Ko‘chma ruxsat — istalgan joydan Face ID"
+    : workplaceGateBlocked
+      ? workplace?.gpsError ||
+        (workplaceGpsMissing
+          ? "Filial GPS kiritilmagan — koordinator lokatsiyani qo‘shsin"
+          : "Doimiy filial GPS tayyor emas — Smena/filial yoki Xatoliklar bo‘limini tekshiring")
+      : remain != null && remain > 0
+        ? `Hududdan tashqaridasiz — yana ${formatMetersOrKm(Math.max(0, remain))}`
+        : !geoInside
+          ? "Hududdan tashqaridasiz — yashil hududga kiring"
+          : null;
+
+  const syncMobileRoute = (action: "in" | "out") => {
+    if (!mobileAnywhere || !gps) return;
+    if (action === "in") {
+      void ensureMobileTrack({
+        latitude: gps.lat,
+        longitude: gps.lng,
+        accuracy: gps.accuracy,
+      }).catch(() => undefined);
+      window.dispatchEvent(
+        new CustomEvent(MOBILE_GPS_GRANTED_EVENT, {
+          detail: {
+            latitude: gps.lat,
+            longitude: gps.lng,
+            accuracy: gps.accuracy,
+          },
+        }),
+      );
+    } else {
+      void endMobileAttendance({
+        latitude: gps.lat,
+        longitude: gps.lng,
+        accuracy: gps.accuracy,
+      }).catch(() => undefined);
+    }
+  };
+
+  const zoneRemainSec = workplace?.zonePresence?.dueAt
+    ? Math.max(0, Math.ceil((Date.parse(workplace.zonePresence.dueAt) - nowTick) / 1000))
+    : workplace?.zonePresence?.remainSec ?? null;
+  const startZoneConfirm = () => {
+    const method = workplace?.zonePresence?.method;
+    if (!method || !gps || !zoneGeoOk) {
+      toast({
+        title: "Sizga belgilangan hududda emassiz",
+        description: "Tashqaridan tasdiq qabul qilinmaydi. O‘z yashil hududingizga kirib, GPS yoqilgan holda tasdiqlang.",
+        variant: "destructive",
+      });
+      return;
+    }
+    zoneConfirmRef.current = true;
+    if (method === "QR") {
+      setScanOpen(false);
+      setQrOpen(true);
+      return;
+    }
+    setQrOpen(false);
+    preloadFaceModels();
+    setScanOpen(true);
+  };
+  const cta = (() => {
+    if (zoneLocked) {
+      return {
+        label: "Bugun bloklandi",
+        sub: "Admin bilan bog‘laning",
+        disabled: true,
+        tone: "warn" as const,
+      };
+    }
+    if (done) {
+      return {
+        label: t("davomat.closedToday"),
+        sub: elapsedLabel ? `Ishlagan: ${elapsedLabel}` : "",
+        disabled: true,
+        tone: "done" as const,
+      };
+    }
+    if (gpsTurnOff) {
+      return {
+        label: "GPS yoqing",
+        sub: "So‘ng qayta kiring",
+        disabled: gpsSharing,
+        tone: "warn" as const,
+      };
+    }
+    if (outsideZone) {
+      if (workplaceGateBlocked) {
+        return {
+          label: workplaceGpsMissing ? "Filial GPS yo‘q" : "Davomat yopiq",
+          sub:
+            workplace?.gpsError ||
+            (workplaceGpsMissing
+              ? "Koordinator filial lokatsiyasini kiritsin"
+              : "Doimiy filial GPS tayyor emas yoki lokatsiya yo‘q — Smena/filialni tekshiring"),
+          disabled: true,
+          tone: "warn" as const,
+        };
+      }
+      return {
+        label: "Hududdan tashqaridasiz",
+        sub:
+          remain != null && remain > 0
+            ? `Yana ${formatMetersOrKm(Math.max(0, remain))} yaqinlashin`
+            : "Avval yashil hudud ichiga kiring",
+        disabled: true,
+        tone: "warn" as const,
+      };
+    }
+    if (needsPerms) {
+      const needGps = !adminQrAnywhere && (!gps || Boolean(gpsError));
+      const needCam = cameraNeeded && !cameraGranted;
+      return {
+        label: gpsSharing
+          ? needGps
+            ? "Joylashuv olinmoqda…"
+            : "Kamera so‘ralmoqda…"
+          : needGps
+            ? "Joylashuvga ruxsat"
+            : needCam
+              ? "Kamera ruxsati"
+              : "Ruxsat berish",
+        sub: needGps && needCam
+          ? "Kamera va geolokatsiya"
+          : needCam
+            ? "Kameraga ruxsat bering, so‘ng qayta kiring"
+            : gpsPermissionDenied
+              ? "Ruxsat bering, so‘ng qayta kiring"
+              : "Geolokatsiya",
+        disabled: gpsSharing,
+        tone: "perm" as const,
+      };
+    }
+    if (!methodReady) {
+      const face = selectedMethod === "FACE_ID";
+      const finger = selectedMethod === "FINGERPRINT" && fingerAllowed;
+      return {
+        label: fingerScanning ? "Barmoq izi kutilmoqda…" : "Davom etish",
+        sub: finger
+          ? fingerStatus?.enabled && !fingerStatus.enrolled
+            ? "Barmoq izini ro‘yxatdan o‘tkazish"
+            : "Barmoq izi orqali tasdiqlash"
+          : face
+            ? faceRegistered === false
+              ? "Face ID ro‘yxatdan o‘tkazish"
+              : "Face ID orqali tasdiqlash"
+            : "QR kodni skaner qilish",
+        disabled: fingerScanning,
+        tone: "go" as const,
+      };
+    }
+    if (!hasIn) {
+      return {
+        label: "Keldim",
+        sub: "Bosib davomatni boshlang",
+        disabled: busy,
+        tone: "in" as const,
+      };
+    }
+    return {
+      label: "Ketdim",
+      sub: afterCheckoutDeadline
+        ? `${checkoutDeadlineHmLabel} muddati o‘tdi — kun yopiladi`
+        : afterShiftEnd
+          ? `Ishlagan: ${elapsedLabel} · ${checkoutDeadlineHmLabel} gacha yoping`
+          : `Ishlagan: ${elapsedLabel} · smena ${shiftEndHm} gacha`,
+      disabled: busy || !canPunchOut,
+      tone: "out" as const,
+    };
+  })();
+
+  const handleContinue = () => {
+    if (done || busy) return;
+    if (gpsTurnOff) {
+      void requestLocationPermission();
+      return;
+    }
+    if (outsideZone) {
+      toast({
+        title: "Hududdan tashqaridasiz",
+        description: "Keldim va Ketdim faqat belgilangan hududda qabul qilinadi.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (needsPerms) {
+      void requestLocationPermission();
+      return;
+    }
+    if (!geoOk) {
+      toast({
+        title: "Hududdan tashqaridasiz",
+        description: "Keldim va Ketdim faqat belgilangan hududda qabul qilinadi. GPS yoqilgan bo‘lsin.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!methodReady) {
+      pickMethod(selectedMethod);
+      return;
+    }
+    if (!hasIn) {
+      void punch("in");
+      return;
+    }
+    setConfirmOut(true);
+  };
+
+  /** Usul nega ochilmayotganini aytadi — tugma «jim» qolmasin */
+  const methodBlockReason = (m: PremiumMethod): { title: string; description?: string } => {
+    if (zoneLocked) {
+      return { title: "Bugun bloklandi", description: workplace?.zonePresence?.message || "Admin bilan bog‘laning." };
+    }
+    if (done) return { title: t("davomat.closedToday") };
+    if (!methodsReady) return { title: "Yuklanmoqda…", description: "Bir soniyadan keyin qayta bosing." };
+    if (m !== "FINGERPRINT" && !cameraGranted) {
+      return {
+        title: t("davomat.permsCamBlockedTitle"),
+        description: "Brauzer sozlamalarida shu saytga kamera ruxsatini bering va qayta bosing.",
+      };
+    }
+    if (!adminQrAnywhere && (!gps || gpsError)) {
+      return { title: "Joylashuv aniqlanmadi", description: gpsError || "GPS yoqing va bir necha soniya kuting." };
+    }
+    if (m === "FACE_ID" && !isFaceIdSupported()) {
+      return { title: "Face ID ishlamaydi", description: t("davomat.faceUnsupported") };
+    }
+    if (outsideZone || !geoOk) {
+      return {
+        title: "Hududdan tashqaridasiz",
+        description: outsideWarn || "Keldim va Ketdim faqat belgilangan hududda qabul qilinadi.",
+      };
+    }
+    return { title: "Hozir ochilmadi", description: "Bir necha soniyadan keyin qayta bosing." };
+  };
+
+  const pickMethod = (m: PremiumMethod) => {
+    if (m === "FACE_ID" && !faceMethodAllowed) {
+      toast({ title: "Aynan sizga ruxsat yo‘q", description: "Face ID siz uchun o‘chirilgan." });
+      return;
+    }
+    if (m === "QR" && !qrMethodAllowed) {
+      toast({ title: "Aynan sizga ruxsat yo‘q", description: "QR siz uchun o‘chirilgan." });
+      return;
+    }
+    if (m === "FINGERPRINT" && !fingerAllowed) return;
+    if (busy || fingerScanning) return;
+    if (!done && !zoneLocked && !methodReady && (needsPerms || gpsTurnOff)) {
+      setSelectedMethod(m);
+      void requestLocationPermission();
+      return;
+    }
+    const blocked =
+      done ||
+      outsideZone ||
+      (m === "FACE_ID" && !canOpenFace) ||
+      (m === "QR" && !canOpenQr) ||
+      (m === "FINGERPRINT" && !canOpenFinger);
+    if (blocked) {
+      setSelectedMethod(m);
+      toast({ ...methodBlockReason(m), variant: "destructive" });
+      return;
+    }
+    setSelectedMethod(m);
+    signalDavomatCoachDone();
+    if (!methodReady) setMethodHint(null);
+    if (m === "FINGERPRINT") {
+      if (methodReady) return;
+      if (!adminQrAnywhere && (!gps || Boolean(gpsError))) {
+        void requestLocationPermission();
+        return;
+      }
+      void openFingerMethod();
+      return;
+    }
+    if (needsPerms) {
+      void requestLocationPermission();
+      return;
+    }
+    if (methodReady) return;
+    if (m === "QR") openQrMethod();
+    else openFaceMethod();
+  };
+
+  const historyRows =
+    historyDays.length === 0 ? (
+      <p className="px-3 py-6 text-center text-xs text-white/45">{t("davomat.historyEmpty")}</p>
+          ) : filteredHistoryDays.length === 0 ? (
+      <p className="px-3 py-6 text-center text-xs text-white/45">{t("davomat.rangeEmpty")}</p>
+    ) : (
+      <ul className="space-y-1.5 px-1.5 py-1.5">
+        {filteredHistoryDays.slice(0, historyRange === "day" ? 1 : historyRange === "week" ? 7 : 14).map((d) => {
+                      const isToday = d.date === todayStamp;
+          const dayParts = splitDay(d.date, t);
+          const shiftLine = dayShiftCaption(d);
+          const hoursLabel =
+            d.workedMinutes > 0
+              ? formatHours(d.workedMinutes, t)
+              : d.workedHours && d.workedHours !== "0:00" && d.workedHours !== "0"
+                ? d.workedHours
+                : `0 ${t("davomat.hourShort")}`;
+          if (d.excused) {
+            const noteOpen = excuseOpenDate === d.date;
+            return (
+              <li
+                key={d.date}
+                className="overflow-hidden rounded-2xl border border-emerald-300/35 bg-gradient-to-br from-emerald-500/30 via-teal-600/25 to-cyan-700/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]"
+              >
+                <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-3 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">
+                      {dayParts.date}
+                      {isToday ? (
+                        <span className="ml-1.5 rounded-full bg-white/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-50">
+                          {t("davomat.todayTag")}
+                        </span>
+                      ) : null}
+                    </p>
+                    <p className="text-[11px] capitalize text-emerald-50/70">{dayParts.weekday}</p>
+                    {shiftLine ? (
+                      <p className="mt-0.5 text-[11px] font-medium text-emerald-50/90">{shiftLine}</p>
+                    ) : null}
+                  </div>
+                  <p className="rounded-full border border-white/25 bg-white/15 px-3 py-1 text-center text-[13px] font-bold tracking-wide text-white">
+                    Sababli
+                  </p>
+                  <p className="text-right font-mono text-xs font-semibold tabular-nums text-emerald-50">{hoursLabel}</p>
+                </div>
+                {d.excuseNote ? (
+                  <button
+                    type="button"
+                    className="w-full border-t border-white/15 px-3 py-2 text-left"
+                    onClick={() => setExcuseOpenDate(noteOpen ? null : d.date)}
+                  >
+                    {noteOpen ? (
+                      <p className="text-[13px] leading-relaxed text-white">{d.excuseNote}</p>
+                    ) : (
+                      <p className="truncate text-[11px] font-medium text-emerald-50/85">{d.excuseNote}</p>
+                    )}
+                  </button>
+                ) : null}
+              </li>
+            );
+          }
+                      return (
+            <li
+                          key={d.date}
+                          className={cn(
+                "flex items-center justify-between gap-2 rounded-xl px-3 py-2.5",
+                isToday && "bg-sky-500/10",
+              )}
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white">
+                  {dayParts.date}
+                              {isToday ? (
+                    <span className="ml-1.5 text-[10px] font-semibold text-sky-300">{t("davomat.todayTag")}</span>
+                              ) : null}
+                </p>
+                <p className="text-[11px] capitalize text-white/45">{dayParts.weekday}</p>
+                {shiftLine ? (
+                  <p className="mt-0.5 text-[11px] font-medium text-sky-200/90">{shiftLine}</p>
+                ) : null}
+                            </div>
+              <div className="shrink-0 text-right">
+                <p className="font-mono text-xs tabular-nums">
+                  <span className="text-emerald-300">{d.checkIn}</span>
+                  <span className="text-white/30"> · </span>
+                  <span className="text-rose-300">{d.checkOut}</span>
+                </p>
+                <p className="mt-0.5 text-[11px] font-semibold tabular-nums text-sky-300/95">{hoursLabel}</p>
+                <p className="text-[10px] text-white/45">{t(STATUS_KEYS[d.status] || d.status, d.status)}</p>
+              </div>
+            </li>
+                      );
+                    })}
+      </ul>
+    );
+
+                      return (
+    <>
+      {workplace?.today.excused ? (
+        <div className="mx-auto mb-3 max-w-lg rounded-2xl border border-teal-200 bg-teal-50 px-3 py-2.5 text-teal-950">
+          <p className="text-sm font-semibold">Bugun sababli</p>
+          {workplace.today.excuseNote ? (
+            <p className="mt-1 text-xs leading-relaxed">{workplace.today.excuseNote}</p>
+          ) : null}
+          <p className="mt-1 text-[11px] font-medium text-teal-800">Jarima tushmaydi</p>
+        </div>
+      ) : null}
+      {workplace?.restDay && !workplace.today.excused ? (
+        <div className="mx-auto mb-3 max-w-lg rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2.5 text-sky-950">
+          <p className="text-sm font-semibold">Bugun dam kuningiz</p>
+          <p className="mt-1 text-xs leading-relaxed">{workplace.restDay.reason}</p>
+          <p className="mt-1 text-[11px] font-medium text-sky-800">
+            Kelmasangiz jarima yozilmaydi. Ishga chiqsangiz — qo‘shimcha ish sifatida belgilanadi, kechikish jarimasi yo‘q.
+          </p>
+        </div>
+      ) : workplace?.swapToday?.kind === "work" ? (
+        <div className="mx-auto mb-3 max-w-lg rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-amber-950">
+          <p className="text-sm font-semibold">Bugun almashuv kuni</p>
+          <p className="mt-1 text-xs leading-relaxed">{workplace.swapToday.with} o‘rniga ishga chiqasiz. Davomatni odatdagidek belgilang.</p>
+        </div>
+      ) : null}
+      {zoneLocked || zoneDue ? (
+        <div className="fixed inset-x-0 top-0 z-[80] px-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <div
+            className={cn(
+              "mx-auto flex max-w-lg items-start gap-3 rounded-2xl border px-3 py-3 shadow-lg",
+              zoneLocked ? "border-rose-200 bg-rose-50 text-rose-950" : "border-emerald-200 bg-white text-[#0f2744]",
+            )}
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">
+                {zoneLocked ? "Bugun bloklandi" : "Yashil hududda ekanligingizni tasdiqlang"}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-current/80">
+                {zoneLocked
+                  ? "Belgilangan vaqtda hudud tasdiqlanmadi. Muammo bo‘lsa admin bilan bog‘laning. Ruxsat berguncha Keldim va Ketdim yopiq — bu kun o‘zi ochilmaydi."
+                  : `${workplace?.zonePresence?.method === "QR" ? "QR kod" : "Face ID"} orqali yashil hudud ichida tasdiqlang.`}
+              </p>
+              {zoneDue && zoneRemainSec != null ? (
+                <p className="mt-1 font-mono text-xs font-semibold text-emerald-700">
+                  Qolgan vaqt {String(Math.floor(zoneRemainSec / 60)).padStart(2, "0")}:{String(zoneRemainSec % 60).padStart(2, "0")}
+                </p>
+              ) : null}
+            </div>
+            {zoneDue ? (
+              <Button type="button" className="h-9 shrink-0 bg-emerald-600 hover:bg-emerald-700" onClick={startZoneConfirm}>
+                Tasdiqlash
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      <DavomatPremiumView
+        personName={personName}
+        roleLine={roleLine}
+        dateLabel={dateLabel}
+        dateWeekday={dateParts.weekday}
+        dateDayMonth={dateParts.dayMonth}
+        dateYear={dateParts.year}
+        clockLabel={clockLabel}
+        checkInLabel={checkInLabel}
+        checkOutLabel={checkOutLabel}
+        planIn={displayShift?.start || null}
+        planOut={displayShift?.end || null}
+        hasIn={hasIn}
+        done={Boolean(done)}
+        inside={mapInside}
+        distance={distance}
+        allowedMeters={allowedMeters}
+        siteLat={site.latitude}
+        siteLng={site.longitude}
+        userLat={gps?.lat}
+        userLng={gps?.lng}
+        headingDeg={gps?.heading}
+        accuracyMeters={gps?.accuracy}
+        workplaceTitle={workplaceTitle}
+        addressHint={null}
+        needsGps={mapNeedsGps}
+        gpsDenied={gpsDenied}
+        gpsOff={gpsTurnOff}
+        gpsFresh={!gpsStale && !gpsTurnOff}
+        gpsSharing={gpsSharing}
+        methodsReady={methodsReady}
+        mobileAnywhere={mobileAnywhere}
+        showMethodPicker={Boolean(methodsReady && !done && !methodReady && !methodsHidden)}
+        onDismissMethods={() => setMethodsHidden(true)}
+        selectedMethod={selectedMethod}
+        onSelectMethod={setSelectedMethod}
+        onPickMethod={pickMethod}
+        canOpenFace={canOpenFace}
+        canOpenQr={canOpenQr}
+        showFace={faceMethodAllowed}
+        showQr={qrMethodAllowed}
+        showFinger={fingerAllowed}
+        canOpenFinger={canOpenFinger && !fingerScanning}
+        fingerHint={fingerScanning ? "Barmoqni qo‘ying…" : fingerHint}
+        outsideZone={outsideZone}
+        outsideWarn={outsideWarn}
+        methodReady={methodReady}
+        faceRegistered={faceRegistered}
+        busy={busy}
+        working={Boolean(working)}
+        elapsedLabel={elapsedLabel}
+        workedCaption={
+          user?.role === "koordinator" && !working && !done && priorOfficeMs > 0
+            ? "Ofis vaqti"
+            : undefined
+        }
+        ctaLabel={cta.label}
+        ctaSub={cta.sub}
+        ctaDisabled={cta.disabled}
+        ctaTone={cta.tone}
+        onContinue={handleContinue}
+        onEnableGps={() => {
+          void requestLocationPermission();
+        }}
+        backHref="/dashboard"
+        canManageQr={canManageQr}
+        canReport={canReport}
+        isTgMiniApp={isTgMiniApp}
+        isAuthenticated={isAuthenticated}
+        salary={isAuthenticated ? salaryCard : null}
+        formatSom={formatSom}
+        historyDays={historyDays}
+        historyRange={historyRange}
+        onHistoryRange={setHistoryRange}
+        historyRows={historyRows}
+        t={t}
+      />
+
+      <FaceScanDialog
+        open={enrollOpen}
+        onOpenChange={setEnrollOpen}
+        mode="enroll"
+        title={t("davomat.enrollTitle")}
+        description={t("davomat.frontCamHint")}
+        onCaptured={onEnrollCaptured}
+      />
+
+      <FaceScanDialog
+        open={scanOpen && methodHint !== "QR" && !qrVerifiedReady}
+        onOpenChange={(open) => {
+          if (!open) zoneConfirmRef.current = false;
+          setScanOpen(open);
+        }}
+        mode="login"
+        title={t("davomat.faceTitle")}
+        description={t("davomat.frontCamHint")}
+        onCaptured={onCaptured}
+      />
+
+      {fingerAllowed ? (
+        <FingerprintEnrollDialog
+          open={fingerEnrollOpen}
+          onOpenChange={setFingerEnrollOpen}
+          isTgMiniApp={isTgMiniApp}
+          onEnrolled={({ enrollPass, ...status }) => {
+            fingerSeqRef.current += 1;
+            setFingerStatus(status);
+            setFingerEnrollOpen(false);
+            setSelectedMethod("FINGERPRINT");
+            const action = (verified?.nextAction || workplace?.today.nextAction || "in") as "in" | "out" | "done";
+            if (enrollPass && action !== "done") {
+              setScanOpen(false);
+              setQrOpen(false);
+              setMethodHint("FINGERPRINT");
+              setVerified({
+                descriptor: [],
+                fingerAssertion: { enrollPass },
+                fullName: workplace?.employee.fullName || user?.fullName || t("davomat.employee"),
+                nextAction: action,
+                checkIn: workplace?.today.checkIn || "—",
+                checkOut: workplace?.today.checkOut || "—",
+                checkInAt: workplace?.today.checkInAt || null,
+                checkOutAt: workplace?.today.checkOutAt || null,
+              });
+              toast({
+                title: "✓ Barmoq izi ro‘yxatdan o‘tdi va tasdiqlandi",
+                description: action === "out" ? "Endi «Ketdim» ni bosing (2 daqiqa ichida)" : "Endi «Keldim» ni bosing (2 daqiqa ichida)",
+              });
+              return;
+            }
+            toast({
+              title: "✓ Barmoq izi ro‘yxatdan o‘tdi",
+              description: "Endi «Davom etish»ni bosib, barmog‘ingizni qo‘ying.",
+            });
+          }}
+        />
+      ) : null}
+
+      <QrScanDialog
+        open={qrOpen && methodHint !== "FACE_ID" && !faceVerifiedReady}
+        stream={qrStream}
+        onOpenChange={(open) => {
+          if (!open) zoneConfirmRef.current = false;
+          setQrOpen(open);
+        }}
+        title={
+          nextAction === "out"
+            ? t("davomat.qrScanTitleOut")
+            : t("davomat.qrScanTitleIn")
+        }
+        description={
+          adminQrAnywhere
+            ? t("davomat.qrScanDescAdmin")
+            : pharmacyStaff
+              ? t("davomat.qrScanDescBranch")
+              : t("davomat.qrScanDescDept")
+        }
+        onDetected={onQrDetected}
+      />
+
+      <DavomatCoachFinger
+        enabled={Boolean(showDualMethods && !done && !methodReady)}
+        needsGps={Boolean(mapNeedsGps)}
+        gpsDenied={gpsDenied}
+        showMethods={Boolean(methodsReady && !done && !methodReady)}
+        onEnableGps={() => void requestLocationPermission()}
+      />
+
+      <AlertDialog
+        open={confirmOut}
+        onOpenChange={(open) => {
+          setConfirmOut(open);
+          if (!open) setEarlyLeaveNote("");
+        }}
+      >
+        <AlertDialogContent className="max-w-sm rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Ketdim?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <p>
+                  Ishlagan vaqt:{" "}
+                  <span className="font-mono text-base font-bold text-foreground">{elapsedLabel}</span>
+                </p>
+                {!afterShiftEnd ? (
+                  <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-amber-900 dark:text-amber-100">
+                    <p className="font-semibold text-foreground">
+                      Nega bugungi vaqtdan oldin ketayapsiz?
+                    </p>
+                    <p className="text-xs leading-snug opacity-90">
+                      Smena tugashi: {shiftEndHm}. Sababni yozing — keyin «Ketdim» ochiladi.
+                    </p>
+                    <div className="space-y-1.5 pt-1">
+                      <Label htmlFor="early-leave-note" className="text-xs font-semibold text-foreground">
+                        Izoh
+                      </Label>
+                      <Textarea
+                        id="early-leave-note"
+                        value={earlyLeaveNote}
+                        onChange={(e) => setEarlyLeaveNote(e.target.value)}
+                        rows={3}
+                        maxLength={500}
+                        placeholder="Masalan: shifokorga bordim, oilaviy sabab…"
+                        className="min-h-[72px] resize-none rounded-xl border-amber-300/60 bg-white text-sm text-foreground dark:bg-slate-950"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <p>Smena yakunlandi. Ketdimni tasdiqlaysizmi?</p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-2">
+            <AlertDialogCancel className="rounded-xl">Yo‘q</AlertDialogCancel>
+            <AlertDialogAction
+              className="rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+              disabled={!afterShiftEnd && earlyLeaveNote.trim().length < 3}
+              onClick={(e) => {
+                if (!afterShiftEnd && earlyLeaveNote.trim().length < 3) {
+                  e.preventDefault();
+                  return;
+                }
+                void punch("out", {
+                  notes: !afterShiftEnd ? earlyLeaveNote.trim() : undefined,
+                });
+              }}
+            >
+              Ha — Ketdim
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}

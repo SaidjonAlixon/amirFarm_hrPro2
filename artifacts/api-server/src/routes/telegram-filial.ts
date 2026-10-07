@@ -1,0 +1,160 @@
+import { Router, type IRouter, type Response, type Request } from "express";
+import {
+  ensureFilialWebhookOnServerless,
+  filialDeleteWebhook,
+  filialGetMe,
+  filialGetWebhookInfo,
+  filialPublicBaseUrl,
+  filialSetMyCommands,
+  filialSetMyDescription,
+  filialSetMyName,
+  filialSetMyShortDescription,
+  filialSetWebhook,
+  isFilialBotConfigured,
+  shouldFilialUsePolling,
+  verifyFilialWebhookSecret,
+  type FilialTelegramUpdate,
+} from "../lib/telegram-filial";
+import { handleFilialBotUpdate } from "../lib/filial-bot-handler";
+import { loadFilialBranches } from "../lib/filial-bot-data";
+
+const router: IRouter = Router();
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+/** Status hech qachon crash qilmasin — webhook ensure alohida try */
+router.get("/telegram-filial/status", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    if (!isFilialBotConfigured()) {
+      res.json({ configured: false, polling: false });
+      return;
+    }
+    let ensure: { ok: boolean; url?: string; note?: string } | null = null;
+    try {
+      ensure = await ensureFilialWebhookOnServerless();
+    } catch (e) {
+      ensure = { ok: false, note: (e as Error).message };
+    }
+    let me: unknown = null;
+    let webhook: unknown = null;
+    let branchCount = 0;
+    try {
+      me = await filialGetMe();
+    } catch (e) {
+      me = { error: (e as Error).message };
+    }
+    try {
+      webhook = await filialGetWebhookInfo();
+    } catch (e) {
+      webhook = { error: (e as Error).message };
+    }
+    try {
+      branchCount = (await loadFilialBranches()).length;
+    } catch {
+      /* ignore */
+    }
+    res.json({
+      configured: true,
+      pollingPreferred: shouldFilialUsePolling(),
+      vercel: Boolean(process.env.VERCEL || process.env.VERCEL_ENV),
+      ensure,
+      me,
+      webhook,
+      branchCount,
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message || "status_failed" });
+  }
+});
+
+/** Telegram webhook — avval ishlov, keyin 200 (Vercel freeze) */
+router.post("/telegram-filial/webhook", async (req: Request, res: Response): Promise<void> => {
+  if (!isFilialBotConfigured()) {
+    res.status(503).json({ error: "TELEGRAM_FILIAL_BOT_TOKEN sozlanmagan" });
+    return;
+  }
+  if (!verifyFilialWebhookSecret(req.header("x-telegram-bot-api-secret-token") || undefined)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const work = handleFilialBotUpdate(req.body as FilialTelegramUpdate).catch((err) =>
+    console.error("telegram-filial webhook:", err),
+  );
+  // Sekin javob keyingi yangilanishlarni ushlab turadi; serverless’da javobdan keyin ish to‘xtatiladi
+  if (isServerless) await work;
+  res.status(200).json({ ok: true });
+});
+
+/** Webhook o‘rnatish — faqat filial bot tokeniga; HR botga tegmaydi */
+router.post("/telegram-filial/setup", async (req: Request, res: Response): Promise<void> => {
+  const setupSecret =
+    process.env.TELEGRAM_FILIAL_SETUP_SECRET?.trim() ||
+    process.env.TELEGRAM_SETUP_SECRET?.trim() ||
+    process.env.CRON_SECRET?.trim();
+  const auth = req.header("x-setup-secret") || req.header("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!setupSecret || auth !== setupSecret) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (!isFilialBotConfigured()) {
+    res.status(503).json({ error: "TELEGRAM_FILIAL_BOT_TOKEN sozlanmagan" });
+    return;
+  }
+
+  try {
+    await filialSetMyCommands([
+      { command: "start", description: "Filiallar ro‘yxati" },
+      { command: "filiallar", description: "Filiallarni ko‘rish" },
+      { command: "kesim", description: "Filiallar kesimi — tumanlar" },
+      { command: "malumot", description: "Xodim ehtiyoji (rekruter)" },
+      { command: "kerak", description: "Xodim kerak filiallar" },
+      { command: "gpsyoq", description: "GPS kiritilmagan filiallar" },
+      { command: "yaqin", description: "Eng yaqin 3 ta filial" },
+      { command: "yordam", description: "Yordam" },
+      { command: "admin", description: "Admin panel" },
+      { command: "rekruterlar", description: "Admin rekruterlar" },
+      { command: "id", description: "Telegram ID" },
+    ]);
+    try {
+      await filialSetMyName("Vaksina lokatsiya");
+      await filialSetMyShortDescription("Filial lokatsiyasi, tuman kesimi, rekruter monitoring");
+      await filialSetMyDescription(
+        "Vaksina lokatsiya — filial, tuman kesimi, bog‘lanish. Rekruterlar uchun xodim ehtiyoji monitoring.",
+      );
+    } catch {
+      /* nom ixtiyoriy */
+    }
+
+    if (shouldFilialUsePolling()) {
+      await filialDeleteWebhook();
+      res.json({
+        ok: true,
+        mode: "polling",
+        note: "TELEGRAM_FILIAL_POLLING=1 — webhook o‘chirildi. Vercel bot ishlashi uchun pollingni o‘chiring va /api/telegram-filial/setup qayta chaqiring.",
+        me: await filialGetMe(),
+      });
+      return;
+    }
+
+    const base = filialPublicBaseUrl();
+    if (!base || !base.startsWith("https://")) {
+      res.status(400).json({
+        error: "PUBLIC_APP_URL kerak (https) — masalan https://hr-ai-gamma.vercel.app",
+      });
+      return;
+    }
+    const webhookUrl = `${base}/api/telegram-filial/webhook`;
+    const whSecret = process.env.TELEGRAM_FILIAL_WEBHOOK_SECRET?.trim();
+    await filialSetWebhook(webhookUrl, whSecret);
+    res.json({
+      ok: true,
+      mode: "webhook",
+      webhookUrl,
+      me: await filialGetMe(),
+      info: await filialGetWebhookInfo(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+export default router;

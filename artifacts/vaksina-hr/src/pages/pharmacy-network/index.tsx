@@ -1,0 +1,3053 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { type Employee } from '@workspace/api-client-react';
+import { useAuth } from '../../contexts/AuthContext';
+import { useI18n } from '../../i18n/I18nProvider';
+import { useToast } from '../../hooks/use-toast';
+import { cn } from '../../lib/utils';
+import { canManagePharmacyOps, isHrRole, isSbRole, canChangeStaffStatus, isDirectorRole } from "../../lib/roles";
+import { fetchStaff, staffQueryKey } from '../../lib/staff-api';
+import { isVacancyPlaceholder } from '../../lib/vacancy-slot';
+import {
+  EMPLOYMENT_STATUS_LABELS,
+  type EmploymentStatus,
+} from '../../lib/staffing-api';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Skeleton } from '../../components/ui/skeleton';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../../components/ui/alert-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../../components/ui/select';
+import { Check, Clock, Pencil, ChevronDown, ChevronUp, MapPin, Store, Search, Users, X, Plus, Copy, Eye, EyeOff, Download, Trash2, UserPlus, ArrowRightLeft, Shuffle } from 'lucide-react';
+import { Link } from 'wouter';
+import {
+  useCreatePharmacyStaff,
+  useDismissPharmacyEmployee,
+  useHardDeletePharmacyEmployee,
+  useChangePharmacyOrgRole,
+  useSaveManagerLocation,
+  useCreatePharmacyBranch,
+  useRemovePharmacyBranch,
+  useTransferPharmacyBranch,
+  useOwnMudirCredentials,
+  useOwnStaffLogins,
+  usePatchNetworkCredentials,
+  usePatchEmployeeProfile,
+  downloadOwnMudirsExcel,
+  downloadOwnStaffExcel,
+  gpsFromLocationField,
+  gpsInputError,
+  displayBranchName,
+  type PharmacyStaffRole,
+  type PharmacyStaffResult,
+  type BranchAccount,
+  type PharmacyOrgRole,
+} from '../../lib/pharmacy-staff-api';
+import { Label } from '../../components/ui/label';
+import { PhoneInput } from '../../components/ui/phone-input';
+import { isCompleteUzPhone, normalizeUzPhone, UZ_PHONE_HINT } from '../../lib/phone';
+import { AddBranchDialog } from './AddBranchDialog';
+import { MoveStaffDialog, type MoveBranchOption, type MovePersonOption } from './MoveStaffDialog';
+import { filialNumberLabel } from '../../lib/filial-number';
+import { scriptIncludes } from '../../lib/script-search';
+
+type ShiftType = 'one' | 'two' | 'custom';
+type BranchEmployee = Employee & {
+  latitude?: number | null;
+  longitude?: number | null;
+  assignedBranchId?: number | null;
+  branchNo?: number | null;
+};
+
+function FilialNoMark({ no }: { no: number | null | undefined }) {
+  const label = filialNumberLabel(no);
+  if (!label) return null;
+  return (
+    <span className="mr-1.5 inline-flex shrink-0 items-center rounded-md bg-rose-600 px-1.5 py-0.5 align-middle text-[10px] font-bold leading-none text-white">
+      {label}
+    </span>
+  );
+}
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() ?? '')
+    .join('');
+}
+
+function shiftText(shiftType?: string | null, shiftLabel?: string | null) {
+  if (shiftType === 'two') return '2-smena';
+  if (shiftType === 'custom') return shiftLabel?.trim() || 'Maxsus holat';
+  return '1-smena';
+}
+
+function empStatus(person: Employee): EmploymentStatus {
+  return (person.employmentStatus as EmploymentStatus) || 'working';
+}
+
+function staffCounts(team: Employee[]) {
+  const live = team.filter((p) => empStatus(p) !== 'dismissed');
+  const pharmacists = live.filter((p) => p.orgRole === 'pharmacist' || p.orgRole === 'supervisor').length;
+  const interns = live.filter((p) => p.orgRole === 'intern').length;
+  return { pharmacists, interns, total: pharmacists + interns };
+}
+
+function googleMapsUrl(lat: number, lng: number) {
+  return `https://www.google.com/maps?q=${lat},${lng}`;
+}
+
+function isNoManagerStatus(status?: string | null) {
+  return status === 'no_manager';
+}
+
+/** Apteka tarmog‘ida yollash statusi ko‘rsatilmaydi — faqat ish holati */
+function displayEmpStatus(status?: string | null): EmploymentStatus {
+  const s = (status as EmploymentStatus) || 'working';
+  if (s === 'need_hire' || s === 'searching' || s === 'new') return 'working';
+  return s;
+}
+
+function EmploymentBadge({ status }: { status?: string | null }) {
+  const s = displayEmpStatus(status);
+  if (s === 'working') return null;
+  const label = EMPLOYMENT_STATUS_LABELS[s] || s;
+  const tone =
+    s === 'closed'
+      ? 'bg-slate-200 text-foreground ring-slate-400 dark:bg-slate-700/60 dark:text-slate-200 dark:ring-slate-500/40'
+      : s === 'dismissed'
+        ? 'bg-red-100 text-red-800 ring-red-300 dark:bg-red-950/50 dark:text-red-300 dark:ring-red-500/30'
+        : s === 'no_manager'
+          ? 'bg-amber-100 text-amber-900 ring-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-500/30'
+          : 'bg-muted text-muted-foreground ring-border';
+
+  return (
+    <span className={cn('inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ring-1 ring-inset', tone)}>
+      {label}
+    </span>
+  );
+}
+
+function ShiftBadge({
+  shiftType,
+  shiftLabel,
+}: {
+  shiftType?: string | null;
+  shiftLabel?: string | null;
+  alert?: boolean;
+}) {
+  const label = shiftText(shiftType, shiftLabel);
+  const tone =
+    shiftType === 'two'
+      ? 'bg-teal-50 text-teal-700 ring-teal-200 dark:bg-teal-950/50 dark:text-teal-300 dark:ring-teal-500/30'
+      : shiftType === 'custom'
+        ? 'bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-500/30'
+        : 'bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-950/50 dark:text-sky-300 dark:ring-sky-500/30';
+
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset', tone)}>
+      <Clock className="h-2.5 w-2.5 opacity-70" />
+      {label}
+    </span>
+  );
+}
+
+function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' }) {
+  return (
+    <div
+      className={cn(
+        'flex shrink-0 items-center justify-center rounded-full bg-primary/90 font-semibold text-primary-foreground dark:bg-sky-600',
+        size === 'sm' ? 'h-8 w-8 text-[10px]' : 'h-9 w-9 text-xs',
+      )}
+    >
+      {initials(name)}
+    </div>
+  );
+}
+
+function LoginPassCard({
+  cred,
+  reveal,
+  onToggleReveal,
+  onCopy,
+  onEdit,
+}: {
+  cred: { login: string; password: string };
+  reveal: boolean;
+  onToggleReveal: () => void;
+  onCopy: (text: string, label: string) => void;
+  onEdit?: () => void;
+}) {
+  if (!cred.login || cred.login === '—') return null;
+  return (
+    <div className="mt-2 space-y-1 rounded-lg border border-border bg-muted px-2 py-1.5 text-[11px]">
+      <div className="flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate">
+          <span className="text-muted-foreground">Login: </span>
+          <span className="font-mono font-semibold text-foreground">{cred.login}</span>
+        </p>
+        <button
+          type="button"
+          className="shrink-0 text-muted-foreground hover:text-primary"
+          title="Loginni nusxalash"
+          onClick={(e) => {
+            e.stopPropagation();
+            void onCopy(cred.login, 'Login');
+          }}
+        >
+          <Copy className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate">
+          <span className="text-muted-foreground">Parol: </span>
+          <span className="font-mono font-semibold text-foreground">
+            {reveal ? cred.password : '••••••••'}
+          </span>
+        </p>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-primary"
+            title={reveal ? 'Yashirish' : 'Ko‘rsatish'}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleReveal();
+            }}
+          >
+            {reveal ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+          </button>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-primary"
+            title="Parolni nusxalash"
+            onClick={(e) => {
+              e.stopPropagation();
+              void onCopy(cred.password, 'Parol');
+            }}
+          >
+            <Copy className="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+      {onEdit ? (
+        <button
+          type="button"
+          className="mt-0.5 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit();
+          }}
+        >
+          <Pencil className="h-3 w-3" />
+          Login/parolni tahrirlash
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export default function PharmacyNetworkPage() {
+  const { t } = useI18n();
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const {
+    data: employees,
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: [...staffQueryKey('active', '', 'all', 'dorixona'), 'with-vacant-branches'],
+    queryFn: () => fetchStaff('active', { workplace: 'dorixona', includeVacantBranches: true }),
+    staleTime: 30_000,
+  });
+  const patchProfile = usePatchEmployeeProfile();
+  const createStaff = useCreatePharmacyStaff();
+  const dismissStaff = useDismissPharmacyEmployee();
+  const hardDeleteStaff = useHardDeletePharmacyEmployee();
+  const createBranch = useCreatePharmacyBranch();
+  const removeBranch = useRemovePharmacyBranch();
+  const transferBranch = useTransferPharmacyBranch();
+  const [transferTarget, setTransferTarget] = useState<{
+    id: number;
+    name: string;
+    reportsToId: number | null;
+  } | null>(null);
+  const [transferCoordId, setTransferCoordId] = useState("");
+  const [addBranchOpen, setAddBranchOpen] = useState(false);
+  const [createdBranch, setCreatedBranch] = useState<{
+    branchName: string;
+    coordinatorName: string;
+    accounts: BranchAccount[];
+  } | null>(null);
+  const [removeBranchTarget, setRemoveBranchTarget] = useState<{ id: number; name: string } | null>(null);
+  const changeOrgRole = useChangePharmacyOrgRole();
+  const saveBranchGps = useSaveManagerLocation();
+  const [moveDialog, setMoveDialog] = useState<{
+    personId?: number | null;
+    branchId?: number | null;
+    role?: PharmacyOrgRole;
+  } | null>(null);
+
+  const canRunNetwork = canManagePharmacyOps(user?.role);
+  const canAddMudir = canRunNetwork;
+  const canAddTeam = false;
+  const canAddStaff = canRunNetwork;
+  const canHardDelete = canRunNetwork;
+  const canPickFilialForStaff = canAddMudir;
+
+  const isMudirOnly = user?.role === 'mudir';
+  const isKoordinatorOnly = user?.role === 'koordinator';
+  const canDismissStaff = canRunNetwork;
+
+  const canSeeFullNetwork =
+    isHrRole(user?.role) ||
+    isDirectorRole(user?.role) ||
+    user?.role === 'admin' ||
+    user?.role === 'recruiter' ||
+    user?.role === 'koordinator' ||
+    user?.role === 'department_head' ||
+    isSbRole(user?.role);
+  const { data: mudirCreds = [] } = useOwnMudirCredentials(isKoordinatorOnly);
+  const { data: staffCreds = [] } = useOwnStaffLogins(isKoordinatorOnly || isMudirOnly);
+  const patchCreds = usePatchNetworkCredentials();
+  const credByEmployee = useMemo(() => {
+    const map = new Map<number, { login: string; password: string; fullName: string }>();
+    for (const c of mudirCreds) map.set(c.employeeId, c);
+    for (const c of staffCreds) map.set(c.employeeId, c);
+    return map;
+  }, [mudirCreds, staffCreds]);
+  const [showPwdIds, setShowPwdIds] = useState<Record<number, boolean>>({});
+  const [exportingMudirs, setExportingMudirs] = useState(false);
+
+  const canEditShift = canRunNetwork;
+
+  const canEditStatus = canChangeStaffStatus(user?.role);
+
+  const canSeeXodimKerakLink =
+    user?.role === 'koordinator' ||
+    user?.role === 'admin' ||
+    isHrRole(user?.role) ||
+    isDirectorRole(user?.role) ||
+    user?.role === 'department_head';
+
+  const canSetBranchGps = canRunNetwork;
+  const canSetNoManager = canChangeStaffStatus(user?.role);
+
+  /** Filialni «Yopilgan» qilish — faqat Admin / Direktor */
+  const canCloseBranch = canChangeStaffStatus(user?.role);
+
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const teamPanelRef = useRef<HTMLDivElement>(null);
+  const [editTarget, setEditTarget] = useState<Employee | null>(null);
+  const [shiftType, setShiftType] = useState<ShiftType>('one');
+  const [shiftLabel, setShiftLabel] = useState('');
+  const [employmentStatus, setEmploymentStatus] = useState<EmploymentStatus>('working');
+  const [editFirstName, setEditFirstName] = useState('');
+  const [editLastName, setEditLastName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [search, setSearch] = useState('');
+  const [coordinatorFilter, setCoordinatorFilter] = useState<string>('all');
+  const [shiftFilter, setShiftFilter] = useState<string>('all');
+  const [teamFilter, setTeamFilter] = useState<'all' | 'with' | 'without' | 'no_manager'>('all');
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [staffRole, setStaffRole] = useState<PharmacyStaffRole>('mudir');
+  const [addKind, setAddKind] = useState<'mudir' | 'xodim'>('mudir');
+  const [addManagerId, setAddManagerId] = useState('');
+  const [branchLocation, setBranchLocation] = useState('');
+  const [createdCreds, setCreatedCreds] = useState<PharmacyStaffResult | null>(null);
+  const [showPwd, setShowPwd] = useState(false);
+  const [gpsDraft, setGpsDraft] = useState<Record<number, string>>({});
+  const [branchNameDraft, setBranchNameDraft] = useState<Record<number, string>>({});
+  const [gpsEditingId, setGpsEditingId] = useState<number | null>(null);
+  const [savedGps, setSavedGps] = useState<Record<number, { lat: number; lng: number }>>({});
+  const [credTarget, setCredTarget] = useState<{
+    employeeId: number;
+    fullName: string;
+    login: string;
+  } | null>(null);
+  const [credLogin, setCredLogin] = useState('');
+  const [credPassword, setCredPassword] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: number;
+    userId: number | null;
+    fullName: string;
+    kind: 'filial' | 'staff' | 'mudir';
+    staffCount?: number;
+    mode: 'hard' | 'dismiss' | 'pick';
+    scope?: 'person' | 'branch';
+    branchName?: string;
+    options?: Array<{
+      id: number;
+      userId: number | null;
+      fullName: string;
+      roleKey: 'mudir' | 'farmasevt' | 'stajyor';
+      label: string;
+    }>;
+    pickKey?: string;
+  } | null>(null);
+  const [editOrgRole, setEditOrgRole] = useState<'manager' | 'pharmacist' | 'intern'>('pharmacist');
+
+  const canDismissPerson = (person: Employee) => {
+    if (!canDismissStaff) return false;
+    if (person.orgRole === 'coordinator') return false;
+    if (empStatus(person) === 'dismissed') return false;
+    if (isNoManagerStatus(empStatus(person)) && !person.userId) return false;
+    if (isMudirOnly && person.orgRole === 'manager') return false;
+    return true;
+  };
+
+  const showDismissButton = (person: Employee) => canDismissPerson(person) && !canHardDelete;
+
+  const orgPeople = useMemo(
+    () => (employees ?? []).filter((e) => !!e.orgRole),
+    [employees],
+  );
+
+  const coordinators = useMemo(() => {
+    let list = orgPeople.filter((e) => e.orgRole === 'coordinator');
+    // Koordinator faqat o‘z kartasini ko‘radi — boshqa koordinatorlarning mudirlari aralashmasin
+    if (isKoordinatorOnly && user?.id) {
+      list = list.filter((e) => e.userId === user.id);
+    }
+    return list;
+  }, [orgPeople, isKoordinatorOnly, user?.id]);
+
+  const allManagers = useMemo(() => {
+    let list = orgPeople.filter(
+      (e) => e.orgRole === 'manager' && empStatus(e) !== 'dismissed',
+    );
+    // Mudir faqat o‘z kartasini ko‘radi
+    if (isMudirOnly && user?.id) {
+      list = list.filter((e) => e.userId === user.id);
+    }
+    // Koordinator — faqat o‘zi qo‘shgan (reportsToId = o‘z coordinator employee id)
+    if (isKoordinatorOnly && user?.id) {
+      const myCoord = orgPeople.find((e) => e.orgRole === 'coordinator' && e.userId === user.id);
+      list = myCoord ? list.filter((m) => m.reportsToId === myCoord.id) : [];
+    }
+    return list.sort((a, b) => (a.location ?? '').localeCompare(b.location ?? '', 'uz'));
+  }, [orgPeople, isMudirOnly, isKoordinatorOnly, user?.id]);
+
+  const pharmacistsByManager = useMemo(() => {
+    const map = new Map<number, Employee[]>();
+    const staffRoles = new Set(['pharmacist', 'intern', 'supervisor']);
+    for (const p of orgPeople) {
+      if (!staffRoles.has(p.orgRole || '') || empStatus(p) === 'dismissed' || isVacancyPlaceholder(p)) continue;
+      const branchIds = new Set<number>();
+      if (p.reportsToId) branchIds.add(p.reportsToId);
+      const assigned = (p as BranchEmployee).assignedBranchId;
+      if (assigned) branchIds.add(assigned);
+      for (const mid of branchIds) {
+        const mgr = orgPeople.find((e) => e.id === mid && e.orgRole === 'manager');
+        if (!mgr) continue;
+        const list = map.get(mid) ?? [];
+        if (!list.some((x) => x.id === p.id)) list.push(p);
+        map.set(mid, list);
+      }
+    }
+    for (const [, list] of map) {
+      list.sort((a, b) => {
+        const rank = (r?: string | null) =>
+          r === 'intern' ? 0 : r === 'supervisor' ? 1 : 2;
+        const d = rank(a.orgRole) - rank(b.orgRole);
+        if (d !== 0) return d;
+        return a.fullName.localeCompare(b.fullName, 'uz');
+      });
+    }
+    return map;
+  }, [orgPeople]);
+
+  const moveBranches = useMemo<MoveBranchOption[]>(() => {
+    const coordName = new Map(
+      orgPeople.filter((e) => e.orgRole === 'coordinator').map((c) => [c.id, c.fullName]),
+    );
+    return orgPeople
+      .filter((m) => m.orgRole === 'manager' && empStatus(m) !== 'dismissed' && empStatus(m) !== 'closed')
+      .map((m) => ({
+        id: m.id,
+        label: displayBranchName(m.location) || (m.location || '').split('|')[0].trim() || m.fullName,
+        branchNo: (m as BranchEmployee).branchNo ?? null,
+        coordinatorName: m.reportsToId ? coordName.get(m.reportsToId) ?? null : null,
+        mudir:
+          m.userId && !isNoManagerStatus(empStatus(m))
+            ? { employeeId: m.id, fullName: m.fullName }
+            : null,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'uz'));
+  }, [orgPeople]);
+
+  const movePeople = useMemo<MovePersonOption[]>(() => {
+    const branchIds = new Set(moveBranches.map((b) => b.id));
+    const list: MovePersonOption[] = [];
+    for (const p of orgPeople) {
+      if (!p.userId || empStatus(p) === 'dismissed' || isVacancyPlaceholder(p)) continue;
+      const org = String(p.orgRole || '');
+      if (org === 'manager') {
+        if (isNoManagerStatus(empStatus(p))) continue;
+        list.push({ id: p.id, fullName: p.fullName, orgRole: 'manager', branchId: p.id });
+      } else if (org === 'pharmacist' || org === 'intern' || org === 'supervisor') {
+        const bid = p.reportsToId ?? (p as BranchEmployee).assignedBranchId ?? null;
+        list.push({
+          id: p.id,
+          fullName: p.fullName,
+          orgRole: org === 'intern' ? 'intern' : 'pharmacist',
+          branchId: bid != null && branchIds.has(bid) ? bid : null,
+        });
+      }
+    }
+    return list.sort((a, b) => a.fullName.localeCompare(b.fullName, 'uz'));
+  }, [orgPeople, moveBranches]);
+
+  const openMove = (opts: { personId?: number | null; branchId?: number | null; role?: PharmacyOrgRole }) => {
+    setEditTarget(null);
+    setDeleteTarget(null);
+    setMoveDialog(opts);
+  };
+
+  const branchHasAlert = (_managerId: number) => false;
+
+  const nameMatch = (person: Employee, q: string) => scriptIncludes(person.fullName || '', q);
+
+  /** Filial: nomi (lotin/kirill), manzil, raqami (16, №16) va mudir ismi. */
+  const branchMatch = (m: Employee, q: string) => {
+    const no = (m as BranchEmployee).branchNo;
+    const numberQuery = /^\s*(№|n|#)?\s*\d+\s*$/i.test(q) ? q.replace(/[^\d]/g, '') : '';
+    if (numberQuery && no != null && String(no) === String(Number(numberQuery))) return true;
+    return scriptIncludes(
+      [m.fullName, displayBranchName(m.location), (m.location || '').split('|')[0]].filter(Boolean).join(' '),
+      numberQuery || q,
+    );
+  };
+
+  const knownCoordIds = useMemo(() => new Set(coordinators.map((c) => c.id)), [coordinators]);
+  const isCoordlessBranch = (m: Employee) => m.reportsToId == null || !knownCoordIds.has(m.reportsToId);
+  const coordlessBranchCount = useMemo(
+    () => (canSeeFullNetwork && !isKoordinatorOnly ? allManagers.filter(isCoordlessBranch).length : 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allManagers, knownCoordIds, canSeeFullNetwork, isKoordinatorOnly],
+  );
+
+  const shiftMatch = (person: Employee) => {
+    if (shiftFilter === 'all') return true;
+    return (person.shiftType || 'one') === shiftFilter;
+  };
+
+  const filteredCoordinators = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return coordinators.filter((c) => {
+      if (coordinatorFilter !== 'all' && String(c.id) !== coordinatorFilter) return false;
+
+      const managersUnder = allManagers.filter((m) => m.reportsToId === c.id);
+      const orphansUnder = orgPeople.filter(
+        (p) =>
+          (p.orgRole === 'pharmacist' || p.orgRole === 'intern' || p.orgRole === 'supervisor') &&
+          p.reportsToId === c.id &&
+          !isVacancyPlaceholder(p),
+      );
+      const personShiftOk = (p: Employee) => shiftFilter === 'all' || (p.shiftType || 'one') === shiftFilter;
+      const underMatchesShift =
+        managersUnder.some((m) => {
+          if (personShiftOk(m)) return true;
+          return (pharmacistsByManager.get(m.id) ?? []).some((p) => personShiftOk(p));
+        }) || orphansUnder.some((p) => personShiftOk(p));
+      if (shiftFilter !== 'all' && !personShiftOk(c) && !underMatchesShift) return false;
+
+      if (!q) return true;
+      if (nameMatch(c, q)) return true;
+      if (orphansUnder.some((p) => nameMatch(p, q))) return true;
+      return managersUnder.some((m) => {
+        if (branchMatch(m, q)) return true;
+        return (pharmacistsByManager.get(m.id) ?? []).some((p) => nameMatch(p, q));
+      });
+    });
+  }, [coordinators, coordinatorFilter, search, shiftFilter, allManagers, pharmacistsByManager, orgPeople]);
+
+  const managers = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const allowedCoordIds = new Set(filteredCoordinators.map((c) => c.id));
+    // Admin/HR: koordinatori yo‘q yoki koordinatori ro‘yxatda bo‘lmagan filiallar ham ko‘rinsin
+    let list = isMudirOnly
+      ? allManagers
+      : allManagers.filter((m) => {
+          if (isCoordlessBranch(m)) {
+            return (
+              canSeeFullNetwork &&
+              !isKoordinatorOnly &&
+              (coordinatorFilter === 'all' || coordinatorFilter === 'none')
+            );
+          }
+          if (coordinatorFilter === 'none') return false;
+          return allowedCoordIds.has(m.reportsToId!);
+        });
+    const coordNameHit = new Set(
+      q ? filteredCoordinators.filter((c) => nameMatch(c, q)).map((c) => c.id) : [],
+    );
+
+    if (shiftFilter !== 'all') {
+      list = list.filter((m) => {
+        if (shiftMatch(m)) return true;
+        return (pharmacistsByManager.get(m.id) ?? []).some((p) => shiftMatch(p));
+      });
+    }
+
+    if (q) {
+      list = list.filter((m) => {
+        if (branchMatch(m, q)) return true;
+        if (m.reportsToId != null && coordNameHit.has(m.reportsToId)) return true;
+        return (pharmacistsByManager.get(m.id) ?? []).some((p) => nameMatch(p, q));
+      });
+    }
+
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    allManagers,
+    filteredCoordinators,
+    coordinatorFilter,
+    knownCoordIds,
+    shiftFilter,
+    search,
+    pharmacistsByManager,
+    isMudirOnly,
+    canSeeFullNetwork,
+    isKoordinatorOnly,
+  ]);
+
+  const teamStats = useMemo(() => {
+    let withTeam = 0;
+    let noManager = 0;
+    for (const m of managers) {
+      if (staffCounts(pharmacistsByManager.get(m.id) ?? []).total > 0) withTeam += 1;
+      if (isNoManagerStatus(empStatus(m)) || !m.userId) noManager += 1;
+    }
+    return {
+      total: managers.length,
+      withTeam,
+      without: managers.length - withTeam,
+      noManager,
+    };
+  }, [managers, pharmacistsByManager]);
+
+  const visibleManagers = useMemo(() => {
+    if (teamFilter === 'all') return managers;
+    if (teamFilter === 'no_manager') {
+      return managers.filter(
+        (m) => isNoManagerStatus(empStatus(m)) || !m.userId,
+      );
+    }
+    return managers.filter((m) => {
+      const has = staffCounts(pharmacistsByManager.get(m.id) ?? []).total > 0;
+      return teamFilter === 'with' ? has : !has;
+    });
+  }, [managers, teamFilter, pharmacistsByManager]);
+
+  const orphanStaffGroups = useMemo(() => {
+    if (isMudirOnly) return [] as { key: string; location: string; staff: Employee[] }[];
+    const allowedCoordIds = new Set(filteredCoordinators.map((c) => c.id));
+    const staffRoles = new Set(['pharmacist', 'intern', 'supervisor']);
+    const q = search.trim().toLowerCase();
+    const orphans = orgPeople.filter((p) => {
+      if (!staffRoles.has(p.orgRole || '')) return false;
+      if (empStatus(p) === 'dismissed') return false;
+      if (!p.reportsToId || !allowedCoordIds.has(p.reportsToId)) return false;
+      if (shiftFilter !== 'all' && !shiftMatch(p)) return false;
+      if (q && !nameMatch(p, q)) return false;
+      return true;
+    });
+    const map = new Map<string, Employee[]>();
+    for (const p of orphans) {
+      const loc = (p.location || '').trim() || t('pharmacy.branchFallback');
+      const list = map.get(loc) ?? [];
+      list.push(p);
+      map.set(loc, list);
+    }
+    return [...map.entries()].map(([location, staff]) => ({
+      key: location,
+      location,
+      staff: staff.sort((a, b) => a.fullName.localeCompare(b.fullName, 'uz')),
+    }));
+  }, [isMudirOnly, filteredCoordinators, orgPeople, shiftFilter, search, t]);
+
+  const filterTeam = (managerId: number) => {
+    let team = (pharmacistsByManager.get(managerId) ?? []).filter(
+      (p) => empStatus(p) !== 'dismissed',
+    );
+    const q = search.trim().toLowerCase();
+    if (shiftFilter !== 'all') {
+      team = team.filter((p) => shiftMatch(p));
+    }
+    if (q) {
+      const manager = allManagers.find((m) => m.id === managerId);
+      if (manager && (branchMatch(manager, q) || (manager.reportsToId != null && coordinators.some((c) => c.id === manager.reportsToId && nameMatch(c, q))))) {
+        return team;
+      }
+      team = team.filter((p) => nameMatch(p, q));
+    }
+    return team;
+  };
+
+const openEditor = (person: Employee, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setEditTarget(person);
+    const parts = String(person.fullName || '').trim().split(/\s+/).filter(Boolean);
+    setEditFirstName(parts.length <= 1 ? person.fullName || '' : parts.slice(0, -1).join(' '));
+    setEditLastName(parts.length <= 1 ? '' : parts[parts.length - 1]);
+    setEditPhone(String((person as Employee & { phone?: string | null }).phone || ''));
+    const role =
+      person.orgRole === 'manager'
+        ? 'manager'
+        : person.orgRole === 'intern'
+          ? 'intern'
+          : 'pharmacist';
+    setEditOrgRole(role);
+    const rawShift = String(person.shiftType || 'one').toLowerCase().trim();
+    if (rawShift === 'two' || rawShift === '2' || rawShift === '2-smena') {
+      setShiftType('two');
+      setShiftLabel('');
+    } else if (rawShift === 'custom') {
+      setShiftType('custom');
+      setShiftLabel(person.shiftLabel ?? '');
+    } else if (rawShift === 'one' || rawShift === '1' || rawShift === '1-smena') {
+      setShiftType('one');
+      setShiftLabel('');
+    } else if (rawShift.includes('two') && !rawShift.includes('one')) {
+      setShiftType('two');
+      setShiftLabel('');
+    } else if (rawShift.includes('+') || rawShift.includes('three')) {
+      setShiftType('custom');
+      setShiftLabel(person.shiftLabel || person.shiftType || '');
+    } else {
+      setShiftType('one');
+      setShiftLabel('');
+    }
+    setEmploymentStatus(empStatus(person));
+  };
+
+  const openDeleteTarget = (person: Employee, staffCount = 0) => {
+    if (person.orgRole === 'manager') {
+      openDeleteBranchPicker(person, staffCount);
+      return;
+    }
+    setDeleteTarget({
+      id: person.id,
+      userId: person.userId ?? null,
+      fullName: person.fullName,
+      kind: 'staff',
+      staffCount: 0,
+      mode: 'hard',
+      scope: 'person',
+    });
+  };
+
+  const openDeleteBranchPicker = (manager: Employee, staffCount = 0) => {
+    const team = pharmacistsByManager.get(manager.id) ?? [];
+    const options: NonNullable<typeof deleteTarget>['options'] = [];
+    const noMudir = isNoManagerStatus(empStatus(manager)) || !manager.userId;
+    if (!noMudir) {
+      options.push({
+        id: manager.id,
+        userId: manager.userId ?? null,
+        fullName: manager.fullName,
+        roleKey: 'mudir',
+        label: `Mudir — ${manager.fullName}`,
+      });
+    }
+    for (const ph of team) {
+      if (empStatus(ph) === 'dismissed') continue;
+      if (!ph.userId) continue;
+      const roleKey =
+        ph.orgRole === 'intern' ? 'stajyor' : ('farmasevt' as const);
+      options.push({
+        id: ph.id,
+        userId: ph.userId ?? null,
+        fullName: ph.fullName,
+        roleKey,
+        label: `${roleKey === 'stajyor' ? 'Stajyor' : 'Farmasevt'} — ${ph.fullName}`,
+      });
+    }
+    const branchName =
+      displayBranchName(manager.location) || manager.location || manager.fullName;
+    setDeleteTarget({
+      id: manager.id,
+      userId: manager.userId ?? null,
+      fullName: manager.fullName,
+      kind: 'filial',
+      staffCount,
+      mode: 'pick',
+      branchName,
+      options,
+      pickKey: options[0] ? `person:${options[0].id}` : '',
+    });
+  };
+
+  const openDismissTarget = (person: Employee) => {
+    const kind = person.orgRole === 'manager' ? 'filial' : 'staff';
+    setDeleteTarget({
+      id: person.id,
+      userId: person.userId ?? null,
+      fullName: person.fullName,
+      kind,
+      staffCount: 0,
+      mode: 'dismiss',
+    });
+  };
+
+  const confirmHardDelete = () => {
+    if (!deleteTarget || (deleteTarget.mode !== 'hard' && deleteTarget.mode !== 'pick')) return;
+
+    let payload = {
+      employeeId: deleteTarget.id,
+      userId: deleteTarget.userId,
+      fullName: deleteTarget.fullName,
+      scope: (deleteTarget.scope ?? 'person') as 'person' | 'branch',
+    };
+
+    if (deleteTarget.mode === 'pick') {
+      const key = deleteTarget.pickKey || '';
+      if (key.startsWith('person:')) {
+        const id = parseInt(key.slice(7), 10);
+        const opt = deleteTarget.options?.find((o) => o.id === id);
+        if (!opt) return;
+        payload = {
+          employeeId: opt.id,
+          userId: opt.userId,
+          fullName: opt.fullName,
+          scope: 'person',
+        };
+      } else {
+        return;
+      }
+    }
+
+    hardDeleteStaff.mutate(payload, {
+      onSuccess: (data) => {
+        setDeleteTarget(null);
+        setEditTarget(null);
+        setExpandedId(null);
+        void refetch();
+                toast({
+          title: 'O‘chirildi',
+          description: data.message,
+        });
+      },
+      onError: (err: Error) => {
+        void refetch();
+        toast({
+          title: 'O‘chirilmadi',
+          description: err.message || 'Xatolik',
+          variant: 'destructive',
+        });
+      },
+    });
+  };
+
+  const confirmDismiss = () => {
+    if (!deleteTarget || deleteTarget.mode !== 'dismiss') return;
+    dismissStaff.mutate(
+      { employeeId: deleteTarget.id },
+      {
+        onSuccess: (data) => {
+          setDeleteTarget(null);
+          setEditTarget(null);
+          setExpandedId(null);
+          void refetch();
+                    toast({
+            title: 'Bo‘shatildi',
+            description: data.message,
+          });
+        },
+        onError: (err: Error) => {
+          void refetch();
+          toast({
+            title: 'Bo‘shatilmadi',
+            description: err.message || 'Xatolik',
+            variant: 'destructive',
+          });
+        },
+      },
+    );
+  };
+
+  const openAddStaff = (kind: 'mudir' | 'xodim' = canAddMudir ? 'mudir' : 'xodim', managerId?: number) => {
+    setFirstName('');
+    setLastName('');
+    setPhone('');
+    setAddKind(kind);
+    setStaffRole(kind === 'mudir' ? 'mudir' : 'farmasevt');
+    setAddManagerId(managerId != null ? String(managerId) : '');
+    if (kind === 'mudir' && managerId != null) {
+      const slot = orgPeople.find((e) => e.id === managerId);
+      setBranchLocation(slot?.location ?? '');
+    } else {
+      setBranchLocation('');
+    }
+    setShowPwd(false);
+    setAddOpen(true);
+  };
+
+  const fillingVacantSlot = useMemo(() => {
+    if (addKind !== 'mudir' || !addManagerId) return false;
+    const slot = allManagers.find((m) => m.id === Number(addManagerId));
+    return !!slot && (!slot.userId || isNoManagerStatus(empStatus(slot)) || empStatus(slot) === "closed");
+  }, [addKind, addManagerId, allManagers]);
+
+  const handleCreateStaff = () => {
+    if (!firstName.trim() || !lastName.trim()) {
+      toast({ title: 'Ism va familiya kiriting', variant: 'destructive' });
+      return;
+    }
+    if (!isCompleteUzPhone(phone)) {
+      toast({ title: UZ_PHONE_HINT, variant: 'destructive' });
+      return;
+    }
+    if (addKind === 'xodim' && canPickFilialForStaff && !addManagerId && !canAddTeam) {
+      toast({ title: t('pharmacy.pickBranch'), variant: 'destructive' });
+      return;
+    }
+    createStaff.mutate(
+      {
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        phone: normalizeUzPhone(phone),
+        role: staffRole,
+        location: staffRole === 'mudir' ? branchLocation.trim() || undefined : undefined,
+        managerEmployeeId:
+          addManagerId
+            ? Number(addManagerId)
+            : undefined,
+      },
+      {
+        onSuccess: (data) => {
+          setAddOpen(false);
+          setCreatedCreds(data);
+          void refetch();
+          toast({ title: 'Yaratildi', description: `${data.fullName} qo‘shildi` });
+        },
+        onError: (e: any) => {
+          toast({
+            title: 'Yaratilmadi',
+            description: e?.message || 'Xato',
+            variant: 'destructive',
+          });
+        },
+      },
+    );
+  };
+
+  const openCredEditor = (employeeId: number, fullName: string) => {
+    const cred = credByEmployee.get(employeeId);
+    setCredTarget({ employeeId, fullName, login: cred?.login || '' });
+    setCredLogin(cred?.login && cred.login !== '—' ? cred.login : '');
+    setCredPassword('');
+  };
+
+  const saveCredentials = () => {
+    if (!credTarget) return;
+    patchCreds.mutate(
+      { employeeId: credTarget.employeeId, login: credLogin.trim(), password: credPassword },
+      {
+        onSuccess: () => {
+          toast({ title: 'Login/parol saqlandi' });
+          setCredTarget(null);
+          setCredPassword('');
+        },
+        onError: (e: any) => {
+          toast({
+            title: 'Saqlanmadi',
+            description: e?.message || 'Xato',
+            variant: 'destructive',
+          });
+        },
+      },
+    );
+  };
+
+  const copyText = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: `${label} nusxalandi` });
+    } catch {
+      toast({ title: 'Nusxalanmadi', variant: 'destructive' });
+    }
+  };
+
+  const handleLoginExcel = async () => {
+    setExportingMudirs(true);
+    try {
+      if (isMudirOnly) await downloadOwnStaffExcel();
+      else await downloadOwnMudirsExcel();
+      toast({ title: 'Excel yuklandi' });
+    } catch (e: any) {
+      toast({ title: 'Excel yuklanmadi', description: e?.message, variant: 'destructive' });
+    } finally {
+      setExportingMudirs(false);
+    }
+  };
+
+  const saveEditor = () => {
+    if (!editTarget) return;
+    const fullName = `${editFirstName.trim()} ${editLastName.trim()}`.replace(/\s+/g, ' ').trim();
+    if (!fullName) {
+      toast({ title: 'Ism kiriting', variant: 'destructive' });
+      return;
+    }
+    if (editPhone.trim() && !isCompleteUzPhone(editPhone)) {
+      toast({ title: UZ_PHONE_HINT, variant: 'destructive' });
+      return;
+    }
+
+    const currentRole =
+      editTarget.orgRole === 'manager'
+        ? 'manager'
+        : editTarget.orgRole === 'intern'
+          ? 'intern'
+          : editTarget.orgRole === 'pharmacist' || editTarget.orgRole === 'supervisor'
+            ? 'pharmacist'
+            : null;
+    const roleChanged =
+      canHardDelete &&
+      currentRole != null &&
+      editOrgRole !== currentRole &&
+      editTarget.orgRole !== 'coordinator';
+
+    const finishOk = (extra?: string) => {
+      toast({
+        title: 'Saqlandi',
+        description:
+          extra ||
+          (canEditStatus && employmentStatus === 'no_manager'
+            ? t('pharmacy.markedNoMudir')
+            : 'Ism va maʼlumot yangilandi'),
+      });
+      setEditTarget(null);
+      refetch();
+    };
+
+    const runProfile = () => {
+      patchProfile.mutate(
+        {
+          employeeId: editTarget.id,
+          firstName: editFirstName.trim(),
+          lastName: editLastName.trim(),
+          fullName,
+          phone: normalizeUzPhone(editPhone),
+          shiftType,
+          shiftLabel: shiftType === 'custom' ? shiftLabel.trim() || 'Maxsus holat' : null,
+          ...(canEditStatus ? { employmentStatus } : {}),
+        },
+        {
+          onSuccess: () => finishOk(),
+          onError: (err: Error) => {
+            toast({ title: 'Saqlanmadi', description: err.message, variant: 'destructive' });
+          },
+        },
+      );
+    };
+
+    if (roleChanged) {
+      // Avval ism/telefon, keyin rol (rol promote bo‘lsa id o‘zgarishi mumkin)
+      patchProfile.mutate(
+        {
+          employeeId: editTarget.id,
+          firstName: editFirstName.trim(),
+          lastName: editLastName.trim(),
+          fullName,
+          phone: normalizeUzPhone(editPhone),
+          shiftType,
+          shiftLabel: shiftType === 'custom' ? shiftLabel.trim() || 'Maxsus holat' : null,
+          ...(canEditStatus ? { employmentStatus } : {}),
+        },
+        {
+          onSuccess: () => {
+            changeOrgRole.mutate(
+              { employeeId: editTarget.id, newOrgRole: editOrgRole },
+              {
+                onSuccess: (data) => finishOk(data.message),
+                onError: (err: Error) => {
+                  toast({
+                    title: 'Rol o‘zgarmadi',
+                    description: err.message || 'Xatolik',
+                    variant: 'destructive',
+                  });
+                  refetch();
+                },
+              },
+            );
+          },
+          onError: (err: Error) => {
+            toast({ title: 'Saqlanmadi', description: err.message, variant: 'destructive' });
+          },
+        },
+      );
+      return;
+    }
+
+    runProfile();
+  };
+
+  const saveBranchLocation = (manager: BranchEmployee) => {
+    const coordinates = (gpsDraft[manager.id] || '').trim();
+    const branchName = (branchNameDraft[manager.id] ?? displayBranchName(manager.location) ?? '').trim();
+    const fromField = gpsFromLocationField(manager.location);
+    const hasExistingGps =
+      (typeof manager.latitude === 'number' && typeof manager.longitude === 'number') ||
+      Boolean(fromField) ||
+      Boolean(savedGps[manager.id]);
+
+    if (coordinates) {
+      const bad = gpsInputError(coordinates);
+      if (bad) {
+        toast({
+          title: 'Koordinata to‘liq emas',
+          description: bad,
+          variant: 'destructive',
+        });
+        return;
+      }
+    } else if (!hasExistingGps) {
+      toast({
+        title: 'Koordinata kerak',
+        description: `Avval GPS yozing: 41°18'23.3"N 69°18'28.0"E`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!branchName || branchName === 'Filial' || branchName === 'Lokatsiya') {
+      toast({
+        title: t('pharmacy.branchNameRequired'),
+        description: 'Masalan: Novza, Olmos 2, Chilonzor',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    saveBranchGps.mutate(
+      {
+        employeeId: manager.id,
+        coordinates,
+        branchName,
+        keepLocation: branchName,
+      },
+      {
+        onSuccess: (data) => {
+          if (typeof data.latitude === 'number' && typeof data.longitude === 'number') {
+            setSavedGps((prev) => ({
+              ...prev,
+              [manager.id]: { lat: data.latitude!, lng: data.longitude! },
+            }));
+          }
+          toast({
+            title: 'Saqlandi',
+            description: `«${displayBranchName(data.location) || branchName}» — pinni bosing, xarita ochiladi`,
+          });
+          setGpsEditingId(null);
+          setGpsDraft((prev) => {
+            const next = { ...prev };
+            delete next[manager.id];
+            return next;
+          });
+          setBranchNameDraft((prev) => {
+            const next = { ...prev };
+            delete next[manager.id];
+            return next;
+          });
+          void refetch();
+        },
+        onError: (err: Error) => {
+          toast({ title: 'Saqlanmadi', description: err.message, variant: 'destructive' });
+        },
+      },
+    );
+  };
+
+  const handleConfirm = (_alertId: number) => {
+    /* Eski ogohlantirish oqimi o‘chirilgan — /xodim-kerak */
+  };
+
+  const handleCancelAlert = (_alertId: number) => {
+    /* Eski ogohlantirish oqimi o‘chirilgan */
+  };
+
+  const toggleBranch = (id: number) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  };
+
+  useEffect(() => {
+    if (expandedId == null) return;
+    const id = window.requestAnimationFrame(() => {
+      teamPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [expandedId]);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-64 w-full rounded-2xl" />
+      </div>
+    );
+  }
+
+  if (isMudirOnly) {
+    if (allManagers.length === 0) {
+      return (
+        <div className="mx-auto max-w-md rounded-2xl border border-dashed bg-card p-8 text-center">
+          <Store className="mx-auto mb-3 h-9 w-9 text-muted-foreground" />
+          <h2 className="text-lg font-semibold">{t("pharmacy.unlinked")}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t("pharmacy.unlinkedHint")}
+          </p>
+        </div>
+      );
+    }
+  }
+
+  const networkEmpty = !isMudirOnly && coordinators.length === 0 && allManagers.length === 0;
+
+  return (
+    <div className={cn('pharmacy-network-page space-y-5', (canAddTeam || isKoordinatorOnly) && 'pb-24 md:pb-0')}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t("pharmacy.title")}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {isMudirOnly
+              ? t('pharmacy.subtitle.mudir')
+              : isKoordinatorOnly
+                ? t('pharmacy.subtitle.coord')
+                : t('pharmacy.subtitle.admin')}
+          </p>
+        </div>
+        <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
+          {(isKoordinatorOnly || isMudirOnly) && (
+            <Button
+              variant="outline"
+              className="w-full gap-2 sm:w-auto"
+              onClick={() => void handleLoginExcel()}
+              disabled={exportingMudirs || allManagers.length === 0}
+            >
+              <Download className="h-4 w-4" />
+              {exportingMudirs ? t('ui.loading') : t('pharmacy.excelDownload')}
+            </Button>
+          )}
+          <a
+            href="/filiallar"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-muted sm:h-9 sm:w-auto"
+          >
+            <MapPin className="h-4 w-4" />
+            Ommaviy xarita
+          </a>
+          {canRunNetwork && (
+            <Button
+              className="h-11 w-full gap-2 sm:h-9 sm:w-auto"
+              onClick={() => {
+                setCreatedBranch(null);
+                setAddBranchOpen(true);
+              }}
+            >
+              <Plus className="h-4 w-4" />
+              Filial qo‘shish
+            </Button>
+          )}
+          {canAddStaff && (
+            <Button className="h-11 w-full gap-2 sm:h-9 sm:w-auto" variant="outline" onClick={() => openAddStaff(canAddMudir ? 'mudir' : 'xodim')}>
+              <Plus className="h-4 w-4" />
+              {canAddMudir ? t('pharmacy.addMudir') : t('pharmacy.addStaff')}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {networkEmpty ? (
+        <div className="rounded-2xl border border-dashed bg-card p-8 text-center">
+          <Store className="mx-auto mb-3 h-9 w-9 text-muted-foreground" />
+          <h2 className="text-lg font-semibold">{t("pharmacy.empty")}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {canAddMudir
+              ? t('pharmacy.emptyAddFirst')
+              : t('pharmacy.emptyNoStaff')}
+          </p>
+          {canAddMudir && (
+            <Button className="mt-4 gap-2" onClick={() => openAddStaff('mudir')}>
+              <Plus className="h-4 w-4" /> {t('pharmacy.addMudir')}
+            </Button>
+          )}
+        </div>
+      ) : null}
+
+        {canSeeXodimKerakLink && (
+          <div className="pn-alerts rounded-xl border border-sky-200 bg-sky-50/80 p-4 dark:border-sky-500/30 dark:bg-sky-950/30">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-sky-900 dark:text-sky-200">Xodim kerak</h2>
+                <p className="mt-0.5 text-xs text-sky-800/80 dark:text-sky-300/80">
+                  Yollash so‘rovlari faqat «Xodim kerak» bo‘limida. Bu yerda status yo‘q — filial va jamoa.
+                </p>
+              </div>
+              <Link href="/xodim-kerak">
+                <Button size="sm" className="gap-1">
+                  <UserPlus className="h-4 w-4" />
+                  Ochish
+                </Button>
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {canSeeFullNetwork && (
+        <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="relative min-w-[220px] flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filial nomi, raqami (№16) yoki xodim ismi..."
+              className="pl-9"
+            />
+          </div>
+          {!isKoordinatorOnly ? (
+            <Select value={coordinatorFilter} onValueChange={setCoordinatorFilter}>
+              <SelectTrigger className="w-full sm:w-[200px]">
+                <SelectValue placeholder={t("pharmacy.coords")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Barcha koordinatorlar</SelectItem>
+                {coordlessBranchCount > 0 ? (
+                  <SelectItem value="none">Koordinatorsiz filiallar ({coordlessBranchCount})</SelectItem>
+                ) : null}
+                {coordinators.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)}>{c.fullName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          <Select value={shiftFilter} onValueChange={setShiftFilter}>
+            <SelectTrigger className="w-full sm:w-[170px]">
+              <SelectValue placeholder={t("pharmacy.shift")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("pharmacy.allShifts")}</SelectItem>
+              <SelectItem value="one">{t("pharmacy.shift1")}</SelectItem>
+              <SelectItem value="two">{t("pharmacy.shift2")}</SelectItem>
+              <SelectItem value="custom">Maxsus</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="flex w-full flex-wrap gap-1.5 sm:w-auto">
+            {(
+              [
+                ['all', `Barchasi (${teamStats.total})`],
+                ['with', `Jamoa bor (${teamStats.withTeam})`],
+                ['without', `Jamoa yo‘q (${teamStats.without})`],
+                ['no_manager', `Mudir yo‘q (${teamStats.noManager})`],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTeamFilter(key)}
+                className={cn(
+                  'rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset transition-colors',
+                  teamFilter === key
+                    ? key === 'without' || key === 'no_manager'
+                      ? 'bg-amber-100 text-amber-900 ring-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-500/40'
+                      : key === 'with'
+                        ? 'bg-emerald-100 text-emerald-800 ring-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:ring-emerald-500/40'
+                        : 'bg-primary text-primary-foreground ring-primary/80'
+                    : 'bg-card text-muted-foreground ring-border hover:bg-muted dark:ring-slate-600 dark:hover:bg-slate-800/60',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        )}
+
+      <div className="pn-section">
+        {(canSeeFullNetwork || isMudirOnly) && (
+        <div className="border-b border-border px-4 py-4 dark:border-slate-700/60 sm:px-5">
+          <p className="pn-section-title mb-3 text-center">
+            1 · Koordinator
+          </p>
+          {!filteredCoordinators.length ? (
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              {isMudirOnly ? t('pharmacy.coordNotFound') : t('pharmacy.coordFilterEmpty')}
+            </p>
+          ) : (
+            <div className={cn('flex flex-wrap justify-center gap-2.5', isMudirOnly && 'flex-col items-stretch sm:items-center')}>
+              {(isMudirOnly ? coordinators : filteredCoordinators).map((coordinator) => {
+                return (
+                  <div
+                    key={coordinator.id}
+                    className={cn(
+                      isMudirOnly
+                        ? 'mx-auto w-full max-w-sm'
+                        : 'w-full max-w-[calc((100%-2.5rem)/2)] sm:max-w-[calc((100%-1.25rem)/3)] lg:max-w-[calc((100%-3.125rem)/6)]',
+                    )}
+                  >
+                    <div
+                      className="pn-card flex min-w-0 flex-col overflow-hidden border-primary/25 dark:border-sky-500/30"
+                    >
+                      <div
+                        className={cn(
+                          'flex flex-1 flex-col border-t-[3px] border-t-primary dark:border-t-sky-500',
+                          isMudirOnly ? 'p-3.5 sm:p-4' : 'p-2.5',
+                        )}
+                      >
+                        <span className="mb-2 w-fit truncate rounded bg-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-muted-foreground dark:bg-slate-800/80 dark:text-slate-400">
+                          Markaz
+                        </span>
+                        <div className="flex items-start gap-3">
+                          <div
+                            className={cn(
+                              'flex shrink-0 items-center justify-center rounded-full bg-primary font-semibold text-primary-foreground',
+                              isMudirOnly ? 'h-11 w-11 text-sm' : 'h-7 w-7 text-[9px]',
+                            )}
+                          >
+                            {initials(coordinator.fullName)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className={cn('truncate font-semibold leading-snug text-foreground', isMudirOnly ? 'text-sm' : 'text-xs')}>
+                              {coordinator.fullName}
+                            </p>
+                            <p className={cn('mt-0.5 truncate text-muted-foreground', isMudirOnly ? 'text-[11px]' : 'text-[10px]')}>
+                              Koordinator
+                            </p>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                              <EmploymentBadge status={empStatus(coordinator)} />
+                              {canSeeFullNetwork && (canEditShift || canEditStatus) && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => openEditor(coordinator, e)}
+                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-primary"
+                                >
+                                  <Pencil className="h-2.5 w-2.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        )}
+
+        <div className="px-3 py-3 sm:px-4">
+          <div className="mb-2.5 flex items-center justify-between gap-3">
+            <p className="pn-section-title">
+              {isMudirOnly ? t('pharmacy.myBranch') : t('pharmacy.branchManagers')}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {teamStats.total} ta filial
+              {!isMudirOnly ? ` · ${teamStats.withTeam} jamoa bor · ${teamStats.without} yo‘q` : ''}
+            </p>
+          </div>
+
+          {expandedId != null && (() => {
+            const manager = managers.find((m) => m.id === expandedId);
+            const team = filterTeam(expandedId);
+            const alert = manager ? branchHasAlert(manager.id) : false;
+            if (!manager) return null;
+
+            return (
+              <div
+                ref={teamPanelRef}
+                className={cn(
+                  'mb-4 flex max-h-[min(55vh,480px)] scroll-mt-20 flex-col rounded-xl border bg-card shadow-sm',
+                  alert
+                    ? 'border-red-300'
+                    : isNoManagerStatus(empStatus(manager))
+                      ? 'border-amber-300'
+                      : 'border-border',
+                )}
+              >
+                <div className="mb-0 flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3 dark:border-slate-700/60">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Farmasevtlar va stajyorlar
+                    </p>
+                    <p className="mt-0.5 text-sm font-semibold text-foreground">
+                      {displayBranchName(manager.location) || t('pharmacy.branchFallback')} — {manager.fullName}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => setExpandedId(null)}
+                  >
+                    Yopish
+                  </Button>
+                </div>
+
+                {team.length === 0 ? (
+                  <div className="space-y-3 px-4 py-6 text-center">
+                    <p className="text-sm text-amber-800 dark:text-amber-300">
+                      Bu filialda farmasevt va stajyor yo‘q
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      {isNoManagerStatus(empStatus(manager)) || empStatus(manager) === "closed" || !manager.userId ? (
+                        canAddMudir ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 gap-1.5 border-rose-300 bg-rose-50 px-3 text-xs font-semibold text-rose-800 hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-950/40 dark:text-rose-200"
+                            onClick={() => openAddStaff("mudir", manager.id)}
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            Mudir qo‘shish
+                          </Button>
+                        ) : null
+                      ) : null}
+                      {(canAddMudir || canAddTeam) && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1.5 border-sky-300 bg-sky-50 px-3 text-xs font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-500/40 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-950/60"
+                          onClick={() => openAddStaff("xodim", manager.id)}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Farmasevt qo‘shish
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {team.map((ph) => {
+                        return (
+                          <div
+                            key={ph.id}
+                            className="rounded-lg border border-border bg-muted/70 px-3 py-2.5 dark:bg-slate-800/50"
+                          >
+                            <div className="flex items-start gap-3">
+                              <Avatar name={ph.fullName} size="sm" />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-start justify-between gap-2">
+                                  <p className="truncate text-sm font-medium text-foreground">{ph.fullName}</p>
+                                  {ph.orgRole === 'intern' ? (
+                                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 ring-1 ring-indigo-200 dark:bg-indigo-950/50 dark:text-indigo-300 dark:ring-indigo-500/30">
+                                      Stajyor
+                                    </span>
+                                  ) : ph.orgRole === 'supervisor' ? (
+                                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 ring-1 ring-indigo-200 dark:bg-indigo-950/50 dark:text-indigo-300 dark:ring-indigo-500/30">
+                                      Boshqaruvchi
+                                    </span>
+                                  ) : (
+                                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground dark:bg-slate-800/80">
+                                      Farmasevt
+                                    </span>
+                                  )}
+                                  {(canEditShift || canEditStatus) && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => openEditor(ph, e)}
+                                      className="rounded p-1.5 text-muted-foreground hover:bg-card hover:text-primary"
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                  {canHardDelete && ph.userId ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => openMove({ personId: ph.id })}
+                                      className="rounded p-1.5 text-sky-600 hover:bg-sky-50 hover:text-sky-800 dark:text-sky-400 dark:hover:bg-sky-950/40"
+                                      title="Boshqa filialga / lavozimga ko‘chirish"
+                                    >
+                                      <Shuffle className="h-3.5 w-3.5" />
+                                    </button>
+                                  ) : null}
+                                  {showDismissButton(ph) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openDismissTarget(ph)}
+                                      className="rounded p-1.5 text-amber-600 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
+                                      title="Bo‘shatish"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                  {canHardDelete && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openDeleteTarget(ph)}
+                                      className="rounded p-1.5 text-rose-500 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950/40"
+                                      title="Butunlay o‘chirish"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  <ShiftBadge
+                                    shiftType={ph.shiftType}
+                                    shiftLabel={ph.shiftLabel}
+                                  />
+                                  <EmploymentBadge status={empStatus(ph)} />
+                                </div>
+                                {(isKoordinatorOnly || isMudirOnly) && credByEmployee.get(ph.id) ? (
+                                  <LoginPassCard
+                                    cred={credByEmployee.get(ph.id)!}
+                                    reveal={!!showPwdIds[ph.id]}
+                                    onToggleReveal={() =>
+                                      setShowPwdIds((prev) => ({
+                                        ...prev,
+                                        [ph.id]: !prev[ph.id],
+                                      }))
+                                    }
+                                    onCopy={copyText}
+                                    onEdit={() => openCredEditor(ph.id, ph.fullName)}
+                                  />
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {visibleManagers.length === 0 && orphanStaffGroups.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">Filter bo‘yicha mudir topilmadi</p>
+          ) : (
+            <div
+              className={cn(
+                isMudirOnly
+                  ? 'mx-auto flex w-full max-w-sm flex-col gap-3'
+                  : 'grid w-full grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5',
+              )}
+            >
+              {visibleManagers.map((manager) => {
+                const fullTeam = pharmacistsByManager.get(manager.id) ?? [];
+                const counts = staffCounts(fullTeam);
+                const hasTeam = counts.total > 0;
+                const open = expandedId === manager.id;
+                const noMudir =
+                  isNoManagerStatus(empStatus(manager)) ||
+                  empStatus(manager) === "closed" ||
+                  !manager.userId;
+                const branchClosed = empStatus(manager) === 'closed';
+                const alert = branchHasAlert(manager.id);
+                const branch = manager as BranchEmployee;
+                const fromField = gpsFromLocationField(manager.location);
+                const gpsSaved = savedGps[manager.id];
+                const lat =
+                  typeof branch.latitude === 'number'
+                    ? branch.latitude
+                    : gpsSaved?.lat ?? fromField?.lat;
+                const lng =
+                  typeof branch.longitude === 'number'
+                    ? branch.longitude
+                    : gpsSaved?.lng ?? fromField?.lng;
+                const hasGps = typeof lat === 'number' && typeof lng === 'number';
+                const displayName = displayBranchName(manager.location).trim();
+                const hasName = Boolean(displayName);
+                const locationLabel = hasName
+                  ? displayName
+                  : hasGps
+                    ? 'Nomsiz lokatsiya'
+                    : t('pharmacy.noLocation');
+                const accent = alert
+                  ? 'border-t-red-500'
+                  : branchClosed
+                    ? 'border-t-slate-500'
+                  : noMudir
+                    ? 'border-t-amber-500'
+                    : hasTeam
+                      ? 'border-t-emerald-500'
+                      : 'border-t-amber-400';
+
+                return (
+                  <div
+                    key={manager.id}
+                    className={cn(
+                      'group pn-card flex min-w-0 flex-col overflow-hidden border-t-[3px] transition-all hover:shadow-md',
+                      accent,
+                      alert && 'border-red-300 bg-red-50/30 ring-1 ring-red-200 dark:border-red-500/50 dark:bg-red-950/25 dark:ring-red-500/20',
+                      branchClosed && !alert && 'border-slate-300 bg-slate-100/70 ring-1 ring-slate-300 dark:border-slate-600 dark:bg-slate-800/50 dark:ring-slate-600/40',
+                      noMudir && !alert && !branchClosed && 'border-amber-300 bg-amber-50/40 ring-1 ring-amber-200 dark:border-amber-500/40 dark:bg-amber-950/20 dark:ring-amber-500/20',
+                      !alert && !noMudir && !branchClosed && !hasTeam && 'border-amber-200 bg-amber-50/30 dark:border-amber-500/30 dark:bg-amber-950/15',
+                      !alert && !noMudir && !branchClosed && hasTeam && 'border-emerald-200 dark:border-emerald-500/35',
+                      open
+                        ? alert
+                          ? 'shadow-md ring-2 ring-red-200 dark:ring-red-500/30'
+                          : branchClosed
+                            ? 'shadow-md ring-2 ring-slate-300 dark:ring-slate-600/50'
+                          : noMudir
+                            ? 'shadow-md ring-2 ring-amber-200 dark:ring-amber-500/30'
+                            : 'border-primary/40 shadow-md ring-2 ring-primary/20 dark:ring-sky-500/25'
+                        : !alert && 'border-border hover:border-slate-300 dark:hover:border-slate-600',
+                    )}
+                  >
+                    <div className="flex flex-1 flex-col gap-3 p-3.5 sm:p-4">
+                      <div className="flex flex-col gap-2">
+                        {(() => {
+                          const editing =
+                            gpsEditingId === manager.id || (canSetBranchGps && !hasGps && !hasName);
+                          if (canSetBranchGps && editing) {
+                            return (
+                              <div className="min-w-0 w-full space-y-2">
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Filial nomi
+                                  </label>
+                                  <Input
+                                    value={
+                                      branchNameDraft[manager.id] ??
+                                      (hasName ? displayName : '')
+                                    }
+                                    onChange={(e) =>
+                                      setBranchNameDraft((prev) => ({
+                                        ...prev,
+                                        [manager.id]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Masalan: Novza, Olmos 2"
+                                    className="h-9 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Koordinata (GPS)
+                                  </label>
+                                  <textarea
+                                    value={gpsDraft[manager.id] ?? ''}
+                                    onChange={(e) =>
+                                      setGpsDraft((prev) => ({ ...prev, [manager.id]: e.target.value }))
+                                    }
+                                    placeholder={`41°18'23.3"N 69°18'28.0"E`}
+                                    rows={2}
+                                    className="w-full resize-none rounded-md border border-input bg-background px-2.5 py-1.5 font-mono text-xs leading-snug"
+                                  />
+                                  <p className="text-[10px] leading-snug text-muted-foreground">
+                                    Google Maps dan nusxa. Agar GPS allaqachon bor bo‘lsa, faqat nomni
+                                    o‘zgartirish mumkin.
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className="h-9 min-w-[7rem] flex-1 sm:flex-none"
+                                    disabled={saveBranchGps.isPending}
+                                    onClick={() => saveBranchLocation(branch)}
+                                  >
+                                    {saveBranchGps.isPending ? 'Saqlanmoqda…' : 'Saqlash'}
+                                  </Button>
+                                  {gpsEditingId === manager.id && (hasGps || hasName) ? (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-9 flex-1 sm:flex-none"
+                                      onClick={() => {
+                                        setGpsEditingId(null);
+                                        setGpsDraft((prev) => {
+                                          const next = { ...prev };
+                                          delete next[manager.id];
+                                          return next;
+                                        });
+                                        setBranchNameDraft((prev) => {
+                                          const next = { ...prev };
+                                          delete next[manager.id];
+                                          return next;
+                                        });
+                                      }}
+                                    >
+                                      Bekor
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="flex w-full min-w-0 items-start gap-2">
+                              {hasGps ? (
+                                <a
+                                  href={googleMapsUrl(lat, lng)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Xaritada ochish"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className={cn(
+                                    'pn-location transition-colors hover:bg-sky-50 hover:text-sky-800 dark:hover:bg-sky-950/40 dark:hover:text-sky-300',
+                                    alert && 'pn-location-alert',
+                                  )}
+                                >
+                                  <MapPin className="mt-0.5 h-4 w-4 shrink-0 opacity-80" />
+                                  <span className="min-w-0 flex-1 whitespace-normal break-words text-sm font-semibold leading-snug">
+                                    <FilialNoMark no={(manager as BranchEmployee).branchNo} />
+                                    {locationLabel}
+                                  </span>
+                                </a>
+                              ) : (
+                                <div
+                                  className={cn('pn-location', alert && 'pn-location-alert')}
+                                >
+                                  <MapPin className="mt-0.5 h-4 w-4 shrink-0 opacity-80" />
+                                  <span className="min-w-0 flex-1 whitespace-normal break-words text-sm font-semibold leading-snug">
+                                    <FilialNoMark no={(manager as BranchEmployee).branchNo} />
+                                    {locationLabel}
+                                  </span>
+                                </div>
+                              )}
+                              {canSetBranchGps ? (
+                                <button
+                                  type="button"
+                                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground shadow-sm hover:border-primary/30 hover:text-primary dark:border-slate-600 dark:bg-slate-800/70 dark:hover:border-sky-500/40 dark:hover:text-sky-300"
+                                  title="Nom va koordinatani tahrirlash"
+                                  onClick={() => {
+                                    setGpsEditingId(manager.id);
+                                    setBranchNameDraft((prev) => ({
+                                      ...prev,
+                                      [manager.id]: hasName ? displayName : '',
+                                    }));
+                                    setGpsDraft((prev) => ({
+                                      ...prev,
+                                      [manager.id]:
+                                        prev[manager.id] || (hasGps ? `${lat}, ${lng}` : ''),
+                                    }));
+                                  }}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                              ) : null}
+                            </div>
+                          );
+                        })()}
+                        <div className="flex flex-wrap items-center justify-end gap-1">
+                          <span
+                            className={cn(
+                              'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold',
+                              hasTeam ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300',
+                            )}
+                            title={hasTeam ? 'Farmasevt yoki stajyor bor' : 'Farmasevt va stajyor yo‘q'}
+                          >
+                            {hasTeam ? 'Jamoa bor' : 'Jamoa yo‘q'}
+                          </span>
+                          {noMudir && canAddMudir && (
+                            <button
+                              type="button"
+                              onClick={() => openAddStaff('mudir', manager.id)}
+                              className="inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 text-xs font-semibold text-amber-900 shadow-sm hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/60"
+                              title="Yangi mudir qo‘shish"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              <span className="hidden sm:inline">Mudir</span>
+                            </button>
+                          )}
+                          {(canAddMudir || canAddTeam) && (
+                            <button
+                              type="button"
+                              onClick={() => openAddStaff('xodim', manager.id)}
+                              className={cn(
+                                'inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg px-2.5 text-xs font-semibold shadow-sm',
+                                !hasTeam
+                                  ? 'border border-sky-300 bg-sky-50 text-sky-900 hover:bg-sky-100 dark:border-sky-500/40 dark:bg-sky-950/40 dark:text-sky-300'
+                                  : canAddTeam
+                                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                    : 'border border-border bg-card text-foreground hover:bg-muted',
+                              )}
+                              title="Farmasevt yoki stajyor qo‘shish"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              <span className="hidden sm:inline">Xodim</span>
+                            </button>
+                          )}
+                          {showDismissButton(manager) && (
+                            <button
+                              type="button"
+                              onClick={() => openDismissTarget(manager)}
+                              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-800 shadow-sm hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/60"
+                              title={t("pharmacy.dismissMudirTitle")}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                          {canHardDelete && (
+                            <button
+                              type="button"
+                              onClick={() => openDeleteTarget(manager, fullTeam.length)}
+                              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 shadow-sm hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-950/60"
+                              title={t("pharmacy.deleteBranchTitle")}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                          {(canEditShift || canEditStatus) && (
+                            <button
+                              type="button"
+                              onClick={(e) => openEditor(manager, e)}
+                              className="inline-flex h-10 w-10 items-center justify-center rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-primary"
+                              title="Holatni o'zgartirish"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex min-w-0 items-start gap-3">
+                        <div
+                          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-700 text-sm font-semibold text-white dark:bg-slate-600"
+                        >
+                          {initials(manager.fullName)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className={cn("text-sm font-semibold leading-snug", noMudir ? "text-rose-700" : "text-foreground")}>
+                            {noMudir ? "Bu filialda mudir yo‘q" : manager.fullName}
+                          </p>
+                          <p className={cn("mt-0.5 text-[11px]", noMudir ? "font-semibold text-rose-600" : "text-muted-foreground")}>
+                            {noMudir ? "Bo‘sh mudir o‘rniga yangi mudir qo‘shish mumkin" : t("pharmacy.mudirRole")}
+                          </p>
+                          <p className="mt-1 flex items-start gap-1 text-xs font-semibold leading-snug text-sky-900 dark:text-sky-300">
+                            <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-700 dark:text-sky-400" />
+                            <span className="min-w-0 break-words">
+                              <FilialNoMark no={(manager as BranchEmployee).branchNo} />
+                              {locationLabel}
+                            </span>
+                          </p>
+                          <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px]">
+                            <span
+                              className={cn(
+                                'rounded-md px-2 py-0.5 font-medium',
+                                counts.pharmacists > 0 ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-muted text-muted-foreground dark:bg-slate-800/70',
+                              )}
+                            >
+                              Farmasevt: {counts.pharmacists}
+                            </span>
+                            <span
+                              className={cn(
+                                'rounded-md px-2 py-0.5 font-medium',
+                                counts.interns > 0 ? 'bg-indigo-50 text-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-300' : 'bg-muted text-muted-foreground dark:bg-slate-800/70',
+                              )}
+                            >
+                              Stajyor: {counts.interns}
+                            </span>
+                          </div>
+                          {isKoordinatorOnly && credByEmployee.get(manager.id) ? (
+                            <LoginPassCard
+                              cred={credByEmployee.get(manager.id)!}
+                              reveal={!!showPwdIds[manager.id]}
+                              onToggleReveal={() =>
+                                setShowPwdIds((prev) => ({
+                                  ...prev,
+                                  [manager.id]: !prev[manager.id],
+                                }))
+                              }
+                              onCopy={copyText}
+                              onEdit={() => openCredEditor(manager.id, manager.fullName)}
+                            />
+                          ) : null}
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            <span
+                              className={cn(
+                                'inline-flex rounded-md px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset',
+                                manager.shiftType === 'two'
+                                  ? 'bg-teal-50 text-teal-700 ring-teal-200 dark:bg-teal-950/50 dark:text-teal-300 dark:ring-teal-500/30'
+                                  : manager.shiftType === 'custom'
+                                    ? 'bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-500/30'
+                                    : 'bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-950/50 dark:text-sky-300 dark:ring-sky-500/30',
+                              )}
+                            >
+                              {shiftText(manager.shiftType, manager.shiftLabel)}
+                            </span>
+                            <EmploymentBadge status={empStatus(manager)} />
+                          </div>
+                        </div>
+                      </div>
+
+                      {canRunNetwork ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 w-full gap-1.5 border-sky-200 text-sky-800 hover:bg-sky-50"
+                          onClick={() => {
+                            setTransferCoordId("");
+                            setTransferTarget({
+                              id: manager.id,
+                              name: locationLabel || manager.fullName,
+                              reportsToId: manager.reportsToId ?? null,
+                            });
+                          }}
+                        >
+                          <ArrowRightLeft className="h-3.5 w-3.5" />
+                          Koordinatorga o‘tkazish
+                        </Button>
+                      ) : null}
+                      {canHardDelete ? (
+                        noMudir ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-9 w-full gap-1.5 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200"
+                            onClick={() => openMove({ branchId: manager.id, role: 'manager' })}
+                          >
+                            <Shuffle className="h-3.5 w-3.5" />
+                            Mavjud xodimni mudir qilish
+                          </Button>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-9 w-full gap-1.5 border-sky-200 text-sky-800 hover:bg-sky-50"
+                            onClick={() => openMove({ personId: manager.id, role: 'manager' })}
+                          >
+                            <Shuffle className="h-3.5 w-3.5" />
+                            Mudirni ko‘chirish / almashtirish
+                          </Button>
+                        )
+                      ) : null}
+                      {canHardDelete ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 w-full gap-1.5 border-rose-200 text-rose-700 hover:bg-rose-50"
+                          onClick={() =>
+                            setRemoveBranchTarget({
+                              id: manager.id,
+                              name: locationLabel || manager.fullName,
+                            })
+                          }
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Filialni o‘chirish
+                        </Button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => toggleBranch(manager.id)}
+                        className={cn(
+                          'mt-auto flex h-9 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-medium transition-colors',
+                          open
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-muted text-foreground hover:bg-muted/80 dark:bg-slate-800/70 dark:hover:bg-slate-800',
+                        )}
+                      >
+                        {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                        {open ? 'Yopish' : 'Batafsil'}
+                      </button>
+
+                      {(noMudir && canAddMudir) || (!hasTeam && (canAddMudir || canAddTeam)) ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          {noMudir && canAddMudir ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 gap-1 border-rose-300 bg-rose-50 px-2.5 text-xs font-semibold text-rose-800 hover:bg-rose-100 dark:border-rose-500/40 dark:bg-rose-950/40 dark:text-rose-200"
+                              onClick={() => openAddStaff("mudir", manager.id)}
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              Mudir qo‘shish
+                            </Button>
+                          ) : null}
+                          {(!hasTeam || noMudir) && (canAddMudir || canAddTeam) ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 gap-1 border-sky-300 bg-sky-50 px-2.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-500/40 dark:bg-sky-950/40 dark:text-sky-300"
+                              onClick={() => openAddStaff('xodim', manager.id)}
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              Farmasevt qo‘shish
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {isMudirOnly && (
+                        <div className="space-y-2 border-t border-border pt-3 dark:border-slate-700/60">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Filial xodimlari
+                          </p>
+                          {fullTeam.length === 0 ? (
+                            <div className="space-y-2">
+                              <p className="text-center text-xs text-muted-foreground">
+                                Hali farmasevt yoki stajyor yo‘q.
+                              </p>
+                              {canAddStaff ? (
+                                <div className="flex justify-center">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-8 gap-1 border-sky-300 bg-sky-50 px-2.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-500/40 dark:bg-sky-950/40 dark:text-sky-300"
+                                    onClick={() => openAddStaff('xodim', manager.id)}
+                                  >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    Xodim qo‘shish
+                                  </Button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            fullTeam.map((ph) => {
+                              return (
+                                <div
+                                  key={ph.id}
+                                  className="rounded-lg border border-border bg-muted/70 px-3 py-2.5 dark:bg-slate-800/50"
+                                >
+                                  <div className="flex items-start gap-3">
+                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                                      {initials(ph.fullName)}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <p className="truncate text-sm font-semibold text-foreground">{ph.fullName}</p>
+                                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                        {ph.orgRole === 'intern'
+                                          ? 'Stajyor'
+                                          : ph.orgRole === 'supervisor'
+                                            ? 'Boshqaruvchi'
+                                            : 'Farmasevt'}
+                                      </p>
+                                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                                        <ShiftBadge
+                                          shiftType={ph.shiftType}
+                                          shiftLabel={ph.shiftLabel}
+                                        />
+                                        <EmploymentBadge status={empStatus(ph)} />
+                                        {(canEditShift || canEditStatus) && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => openEditor(ph, e)}
+                                            className="rounded p-0.5 text-muted-foreground hover:bg-card hover:text-primary"
+                                          >
+                                            <Pencil className="h-3 w-3" />
+                                          </button>
+                                        )}
+                                        {canHardDelete && ph.userId ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => openMove({ personId: ph.id })}
+                                            className="rounded p-0.5 text-sky-600 hover:bg-sky-50 hover:text-sky-800 dark:text-sky-400"
+                                            title="Boshqa filialga / lavozimga ko‘chirish"
+                                          >
+                                            <Shuffle className="h-3 w-3" />
+                                          </button>
+                                        ) : null}
+                                        {showDismissButton(ph) && (
+                                          <button
+                                            type="button"
+                                            onClick={() => openDismissTarget(ph)}
+                                            className="rounded p-0.5 text-amber-600 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
+                                            title="Bo‘shatish"
+                                          >
+                                            <Trash2 className="h-3 w-3" />
+                                          </button>
+                                        )}
+                                        {canHardDelete && (
+                                          <button
+                                            type="button"
+                                            onClick={() => openDeleteTarget(ph)}
+                                            className="rounded p-0.5 text-rose-500 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950/40"
+                                            title="Butunlay o‘chirish"
+                                          >
+                                            <Trash2 className="h-3 w-3" />
+                                          </button>
+                                        )}
+                                      </div>
+                                      {credByEmployee.get(ph.id) ? (
+                                        <LoginPassCard
+                                          cred={credByEmployee.get(ph.id)!}
+                                          reveal={!!showPwdIds[ph.id]}
+                                          onToggleReveal={() =>
+                                            setShowPwdIds((prev) => ({
+                                              ...prev,
+                                              [ph.id]: !prev[ph.id],
+                                            }))
+                                          }
+                                          onCopy={copyText}
+                                          onEdit={() => openCredEditor(ph.id, ph.fullName)}
+                                        />
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {orphanStaffGroups.map((group) => (
+                <div
+                  key={`orphan-${group.key}`}
+                  className="group pn-card flex min-w-0 flex-col overflow-hidden border border-amber-300 border-t-[3px] border-t-amber-500 bg-amber-50/40 ring-1 ring-amber-200 dark:border-amber-500/40 dark:bg-amber-950/20 dark:ring-amber-500/20"
+                >
+                  <div className="flex flex-1 flex-col gap-3 p-3.5 sm:p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="inline-flex min-w-0 items-start gap-1.5 rounded-lg bg-amber-100 px-2 py-1 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300">
+                        <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-80" />
+                        <span className="min-w-0 flex-1 whitespace-normal break-words text-[13px] font-semibold leading-snug">
+                          {displayBranchName(group.location) || t('pharmacy.branchFallback')}
+                        </span>
+                      </div>
+                      <span className="inline-flex items-center gap-1 rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+                        <Users className="h-3 w-3" />
+                        {group.staff.length}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Mudir yo‘q</p>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        Filialda xodimlar bor, mudir biriktirilmagan. Ular ishlashda davom etadi.
+                      </p>
+                      <div className="mt-2">
+                        <span className="inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900 ring-1 ring-inset ring-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-500/30">
+                          Mudir yo‘q
+                        </span>
+                      </div>
+                    </div>
+                    <div className="space-y-2 border-t border-amber-100 pt-3 dark:border-amber-500/20">
+                      {group.staff.map((ph) => (
+                        <div key={ph.id} className="rounded-lg border border-border bg-card px-3 py-2.5">
+                          <div className="flex items-start gap-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                              {initials(ph.fullName)}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-semibold text-foreground">{ph.fullName}</p>
+                              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                {ph.orgRole === 'intern'
+                                  ? 'Stajyor'
+                                  : ph.orgRole === 'supervisor'
+                                    ? 'Boshqaruvchi'
+                                    : 'Farmasevt'}
+                              </p>
+                              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                                <ShiftBadge
+                                  shiftType={ph.shiftType}
+                                  shiftLabel={ph.shiftLabel}
+                                />
+                                <EmploymentBadge status={empStatus(ph)} />
+                                {(canEditShift || canEditStatus) && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => openEditor(ph, e)}
+                                    className="rounded p-0.5 text-muted-foreground hover:bg-card hover:text-primary"
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                  </button>
+                                )}
+                                {canHardDelete && ph.userId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openMove({ personId: ph.id })}
+                                    className="rounded p-0.5 text-sky-600 hover:bg-sky-50 hover:text-sky-800 dark:text-sky-400"
+                                    title="Filialga biriktirish / ko‘chirish"
+                                  >
+                                    <Shuffle className="h-3 w-3" />
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {canAddStaff && (
+        <div className="pn-mobile-bar md:hidden">
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant="outline"
+              className="h-11 w-full gap-1.5 border-amber-300 bg-amber-50 text-amber-950"
+              onClick={() => openAddStaff('mudir')}
+            >
+              <Plus className="h-4 w-4" />
+              Mudir
+            </Button>
+            <Button className="h-11 w-full gap-1.5" onClick={() => openAddStaff('xodim')}>
+              <Plus className="h-4 w-4" />
+              Farmasevt
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <Dialog open={!!credTarget} onOpenChange={(open) => !open && setCredTarget(null)}>
+        <DialogContent className="w-[calc(100%-1.25rem)] max-w-md">
+          <DialogHeader>
+            <DialogTitle>Login/parol — {credTarget?.fullName}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="space-y-1.5">
+              <Label>Login</Label>
+              <Input
+                value={credLogin}
+                onChange={(e) => setCredLogin(e.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t("pharmacy.newPassword")}</Label>
+              <Input
+                type="text"
+                value={credPassword}
+                onChange={(e) => setCredPassword(e.target.value)}
+                placeholder="O‘zgartirmasangiz bo‘sh qoldiring"
+              />
+              <p className="text-xs text-muted-foreground">Kamida 6 belgi. Bo‘sh qoldirsangiz, parol o‘zgarmaydi.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCredTarget(null)}>
+              Bekor qilish
+            </Button>
+            <Button onClick={saveCredentials} disabled={patchCreds.isPending || !credLogin.trim()}>
+              Saqlash
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editTarget} onOpenChange={(open) => !open && setEditTarget(null)}>
+        <DialogContent className="w-[calc(100%-1.25rem)] max-w-md">
+          <DialogHeader>
+            <DialogTitle>Tahrirlash — {editTarget?.fullName}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Ism</Label>
+                <Input value={editFirstName} onChange={(e) => setEditFirstName(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Familiya</Label>
+                <Input value={editLastName} onChange={(e) => setEditLastName(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Telefon</Label>
+              <PhoneInput value={editPhone} onChange={setEditPhone} />
+            </div>
+            {canHardDelete &&
+              editTarget &&
+              editTarget.orgRole !== 'coordinator' &&
+              !(isNoManagerStatus(empStatus(editTarget)) && !editTarget.userId) && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Lavozim / rol</p>
+                <Select
+                  value={editOrgRole}
+                  onValueChange={(v) =>
+                    setEditOrgRole(v as 'manager' | 'pharmacist' | 'intern')
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="manager">Mudir</SelectItem>
+                    <SelectItem value="pharmacist">Farmasevt</SelectItem>
+                    <SelectItem value="intern">Stajyor</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Shu filial ichida almashadi. Mudirni farmasevt/stajyor qilsangiz filial o‘chmaydi — mudirsiz
+                  qoladi. Farmasevtni mudir qilsangiz, joriy mudir shu filialda farmasevt bo‘ladi. Boshqa
+                  filialga o‘tkazish uchun «Ko‘chirish» tugmasini bosing.
+                </p>
+              </div>
+            )}
+            {canEditStatus && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Xodim holati</p>
+                <Select
+                  value={employmentStatus}
+                  onValueChange={(v) => setEmploymentStatus(v as EmploymentStatus)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="working">{t("pharmacy.working")}</SelectItem>
+                    <SelectItem value="dismissed">{t("pharmacy.dismissed")}</SelectItem>
+                    {canSetNoManager && editTarget?.orgRole === 'manager' && (
+                      <SelectItem value="no_manager">Mudir yo‘q</SelectItem>
+                    )}
+                    {editTarget?.orgRole === 'manager' &&
+                      (canCloseBranch || employmentStatus === 'closed') && (
+                      <SelectItem value="closed" disabled={!canCloseBranch}>
+                        Yopilgan
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+                {employmentStatus === 'closed' ? (
+                  <p className="text-xs text-muted-foreground">
+                    Filial yopilgan deb belgilanadi, lekin ro‘yxatda «Yopilgan» statusi bilan qoladi.
+                  </p>
+                ) : employmentStatus === 'no_manager' ? (
+                  <p className="text-xs text-amber-700">
+                    Faqat mudir yo‘q deb belgilanadi. Yollash uchun «Xodim kerak» bo‘limidan so‘rov yuboring.
+                  </p>
+                ) : employmentStatus === 'dismissed' ? (
+                  <p className="text-xs text-muted-foreground">
+                    Bo‘shatilgan — bazada saqlanadi, hech kimga bildirishnoma yuborilmaydi.
+                  </p>
+                ) : null}
+              </div>
+            )}
+            {canEditShift && editTarget?.orgRole !== 'coordinator' && (
+              <>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Smena</p>
+                  <Select value={shiftType} onValueChange={(v) => setShiftType(v as ShiftType)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="one">{t("pharmacy.shift1")}</SelectItem>
+                      <SelectItem value="two">{t("pharmacy.shift2")}</SelectItem>
+                      <SelectItem value="custom">Mudir belgilagan holat</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {shiftType === 'custom' && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Maxsus smena</p>
+                    <Input
+                      value={shiftLabel}
+                      onChange={(e) => setShiftLabel(e.target.value)}
+                      placeholder="Masalan: Navbatchi..."
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+            {editTarget && editTarget.orgRole !== 'coordinator' ? (
+              <div className="flex flex-wrap gap-2">
+                {canHardDelete && editTarget.userId ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-1.5 border-sky-300 text-sky-800 hover:bg-sky-50 dark:border-sky-500/40 dark:text-sky-300 dark:hover:bg-sky-950/40"
+                    onClick={() =>
+                      openMove({
+                        personId: editTarget.id,
+                        role: editTarget.orgRole === 'manager' ? 'manager' : undefined,
+                      })
+                    }
+                  >
+                    <Shuffle className="h-4 w-4" />
+                    Ko‘chirish
+                  </Button>
+                ) : null}
+                {showDismissButton(editTarget) ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-1.5 border-amber-300 text-amber-800 hover:bg-amber-50 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-950/40"
+                    onClick={() => openDismissTarget(editTarget)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Bo‘shatish
+                  </Button>
+                ) : null}
+                {canHardDelete ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-1.5 border-rose-300 text-rose-700 hover:bg-rose-50 dark:border-rose-500/40 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                    onClick={() => {
+                      const count =
+                        editTarget.orgRole === 'manager'
+                          ? (pharmacistsByManager.get(editTarget.id) ?? []).length
+                          : 0;
+                      openDeleteTarget(editTarget, count);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Butunlay o‘chirish
+                  </Button>
+                ) : null}
+              </div>
+            ) : (
+              <span />
+            )}
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => setEditTarget(null)}>
+                Bekor qilish
+              </Button>
+              <Button
+                onClick={saveEditor}
+                disabled={patchProfile.isPending || changeOrgRole.isPending}
+              >
+                Saqlash
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="w-[calc(100%-1.25rem)] max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {addKind === 'mudir' ? 'Yangi mudir' : 'Yangi xodim'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Ism</Label>
+                <Input
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  placeholder="Dilnoza"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Familiya</Label>
+                <Input
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  placeholder="Xushboqova"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Telefon raqam</Label>
+              <PhoneInput value={phone} onChange={setPhone} />
+            </div>
+            {addKind === 'mudir' ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label>Rol</Label>
+                  <Select value="mudir" disabled>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mudir">Mudir</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {fillingVacantSlot ? (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200">
+                    Bo‘sh filial sloti — manzil va GPS saqlangan. Yangi mudir shu filialga biriktiriladi.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    <Label>Filial koordinatasi</Label>
+                    <Input
+                      value={branchLocation}
+                      onChange={(e) => setBranchLocation(e.target.value)}
+                      placeholder={`41°18'23.3"N 69°18'28.0"E`}
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Google Maps dan nusxa — tizim lokatsiya nomini o‘zi topadi.
+                    </p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {isKoordinatorOnly || (canPickFilialForStaff && !canAddTeam) ? (
+                  <div className="space-y-1.5">
+                    <Label>Filial</Label>
+                    <Select value={addManagerId || undefined} onValueChange={setAddManagerId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder={t("pharmacy.pickBranch")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {allManagers.map((m) => (
+                          <SelectItem key={m.id} value={String(m.id)}>
+                            {displayBranchName(m.location) || m.fullName} — {m.fullName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground">
+                      Xodim shu mudir ostiga tushadi.
+                    </p>
+                  </div>
+                ) : null}
+                <div className="space-y-1.5">
+                  <Label>Rol</Label>
+                  <Select
+                    value={staffRole}
+                    onValueChange={(v) => setStaffRole(v as PharmacyStaffRole)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="farmasevt">Farmasevt</SelectItem>
+                      <SelectItem value="stajyor">Stajyor</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Yaratilgach tizim avtomatik login va parol beradi.
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setAddOpen(false)}>
+              Bekor
+            </Button>
+            <Button onClick={handleCreateStaff} disabled={createStaff.isPending}>
+              {createStaff.isPending ? t('pharmacy.creating') : t('ui.create')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!createdCreds} onOpenChange={(o) => !o && setCreatedCreds(null)}>
+        <DialogContent className="w-[calc(100%-1.25rem)] max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("pharmacy.loginPass")}</DialogTitle>
+          </DialogHeader>
+          {createdCreds && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">{createdCreds.fullName}</span>
+                {' · '}
+                {createdCreds.role}
+              </p>
+              <div className="rounded-lg border bg-muted p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] uppercase text-muted-foreground">Login</p>
+                    <p className="font-mono text-sm font-semibold">{createdCreds.login}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() => void copyText(createdCreds.login, 'Login')}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] uppercase text-muted-foreground">Parol</p>
+                    <p className="font-mono text-sm font-semibold">
+                      {showPwd ? createdCreds.temporaryPassword : '••••••••'}
+                    </p>
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowPwd((v) => !v)}
+                    >
+                      {showPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        void copyText(createdCreds.temporaryPassword, 'Parol')
+                      }
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={() =>
+                  void copyText(
+                    `Login: ${createdCreds.login}\nParol: ${createdCreds.temporaryPassword}`,
+                    'Login/parol',
+                  )
+                }
+              >
+                Hammasini nusxalash
+              </Button>
+              <p className="text-xs text-amber-700">
+                Parolni hozir saqlang — keyin ko‘rinmaydi.
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setCreatedCreds(null)}>{t('pharmacy.close')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteTarget?.mode === 'dismiss'
+                ? deleteTarget?.kind === 'filial'
+                  ? t('pharmacy.dismissMudirQ')
+                  : t('pharmacy.dismissStaffQ')
+                : deleteTarget?.mode === 'pick'
+                  ? 'Kimni o‘chirasiz?'
+                  : deleteTarget?.kind === 'filial'
+                    ? t('pharmacy.deleteBranchQ')
+                    : t('pharmacy.deleteStaffQ')}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                {deleteTarget?.mode === 'dismiss' ? (
+                  <>
+                    <p>
+                      <span className="font-semibold text-foreground">{deleteTarget?.fullName}</span>{' '}
+                      {deleteTarget?.kind === 'filial'
+                        ? 'bo‘shatiladi va tizimdan chiqariladi.'
+                        : 'bo‘shatiladi va tizimdan chiqariladi.'}
+                    </p>
+                    {deleteTarget?.kind === 'filial' ? (
+                      <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200">
+                        Filial, manzil va GPS saqlanadi. Jamoa (farmasevt/stajyor) qoladi. O‘rniga yangi
+                        mudir qo‘shishingiz mumkin.
+                      </p>
+                    ) : (
+                      <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200">
+                        Filial o‘chmaydi. O‘rniga yangi farmasevt yoki stajyor qo‘shishingiz mumkin.
+                      </p>
+                    )}
+                  </>
+                ) : deleteTarget?.mode === 'pick' ? (
+                  <>
+                    <p>
+                      Filial:{' '}
+                      <span className="font-semibold text-foreground">
+                        {deleteTarget.branchName || deleteTarget.fullName}
+                      </span>
+                    </p>
+                    <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-950/30 dark:text-emerald-200">
+                      Filial o‘chmaydi. Mudir o‘chirilsa filial koordinatorda mudirsiz qoladi — keyin yangi
+                      mudir qo‘yasiz yoki mavjud xodimni mudir qilasiz.
+                    </p>
+                    {(deleteTarget.options ?? []).length === 0 ? (
+                      <p className="text-xs">
+                        Bu filialda o‘chiriladigan odam yo‘q. Filialni butunlay olib tashlash kerak bo‘lsa,
+                        kartadagi «Filialni o‘chirish» tugmasidan foydalaning.
+                      </p>
+                    ) : null}
+                    <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-md border border-border p-2">
+                      {(deleteTarget.options ?? []).map((opt) => (
+                        <label
+                          key={opt.id}
+                          className={cn(
+                            'flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted',
+                            deleteTarget.pickKey === `person:${opt.id}` && 'bg-muted',
+                          )}
+                        >
+                          <input
+                            type="radio"
+                            name="delete-pick"
+                            className="mt-1"
+                            checked={deleteTarget.pickKey === `person:${opt.id}`}
+                            onChange={() =>
+                              setDeleteTarget((prev) =>
+                                prev ? { ...prev, pickKey: `person:${opt.id}` } : prev,
+                              )
+                            }
+                          />
+                          <span>
+                            <span className="font-medium text-foreground">{opt.label}</span>
+                            <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                              {opt.roleKey === 'mudir'
+                                ? 'Faqat mudir o‘chadi — filial va jamoa qoladi'
+                                : 'Faqat shu odam o‘chadi, qolganlar saqlanadi'}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    {deleteTarget.pickKey?.startsWith('person:') ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-700 hover:underline dark:text-sky-400"
+                        onClick={() => {
+                          const id = parseInt(deleteTarget.pickKey!.slice(7), 10);
+                          const opt = deleteTarget.options?.find((o) => o.id === id);
+                          openMove({ personId: id, role: opt?.roleKey === 'mudir' ? 'manager' : undefined });
+                        }}
+                      >
+                        <Shuffle className="h-3.5 w-3.5" />
+                        O‘chirish o‘rniga boshqa filialga yoki lavozimga ko‘chirish
+                      </button>
+                    ) : null}
+                    <p className="text-rose-700">
+                      O‘chirilgan odamning login, paroli va davomati o‘chadi. Qaytarib bo‘lmaydi.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p>
+                      <span className="font-semibold text-foreground">{deleteTarget?.fullName}</span>{' '}
+                      tizimdan butunlay o‘chiriladi. Filial saqlanadi — o‘rni bo‘sh qoladi.
+                    </p>
+                    <p className="text-rose-700">
+                      Login, parol, davomat, Face ID va boshqa bog‘liq ma’lumotlar ham yo‘qoladi. Qaytarib
+                      bo‘lmaydi.
+                    </p>
+                  </>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={hardDeleteStaff.isPending || dismissStaff.isPending}
+            >
+              Bekor
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className={
+                deleteTarget?.mode === 'dismiss'
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-rose-600 hover:bg-rose-700'
+              }
+              disabled={
+                hardDeleteStaff.isPending ||
+                dismissStaff.isPending ||
+                (deleteTarget?.mode === 'pick' && !deleteTarget.pickKey)
+              }
+              onClick={(e) => {
+                e.preventDefault();
+                if (deleteTarget?.mode === 'dismiss') confirmDismiss();
+                else confirmHardDelete();
+              }}
+            >
+              {deleteTarget?.mode === 'dismiss'
+                ? dismissStaff.isPending
+                  ? 'Bo‘shatilmoqda…'
+                  : 'Ha, bo‘shatish'
+                : hardDeleteStaff.isPending
+                  ? 'O‘chirilmoqda…'
+                  : 'Ha, o‘chirish'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <MoveStaffDialog
+        open={!!moveDialog}
+        onOpenChange={(open) => !open && setMoveDialog(null)}
+        branches={moveBranches}
+        people={movePeople}
+        initialPersonId={moveDialog?.personId ?? null}
+        initialBranchId={moveDialog?.branchId ?? null}
+        initialRole={moveDialog?.role}
+        onDone={(message) => {
+          setExpandedId(null);
+          void refetch();
+          toast({ title: 'Ko‘chirildi', description: message });
+        }}
+      />
+
+      <AddBranchDialog
+        open={addBranchOpen}
+        onOpenChange={(next) => {
+          setAddBranchOpen(next);
+          if (!next) setCreatedBranch(null);
+        }}
+        coordinators={coordinators.map((c) => ({ id: c.id, fullName: c.fullName }))}
+        pending={createBranch.isPending}
+        created={createdBranch}
+        onSubmit={(payload) => {
+          createBranch.mutate(payload, {
+            onSuccess: (data) => {
+              setCreatedBranch({
+                branchName: data.branchName,
+                coordinatorName: data.coordinatorName,
+                accounts: data.accounts,
+              });
+              void refetch();
+              toast({ title: "Filial qo‘shildi", description: data.branchName });
+            },
+            onError: (err: Error) => {
+              toast({ title: "Qo‘shilmadi", description: err.message, variant: "destructive" });
+            },
+          });
+        }}
+      />
+
+      <Dialog
+        open={!!transferTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setTransferTarget(null);
+            setTransferCoordId("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ArrowRightLeft className="h-4 w-4 text-sky-700" />
+              Koordinatorga o‘tkazish
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p>
+              <span className="font-semibold">{transferTarget?.name}</span> boshqa koordinatorga o‘tadi.
+              Filial nomi, raqami, GPS, xodimlar, smena, login va davomat o‘zgarmaydi.
+            </p>
+            <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Hozirgi koordinator:{" "}
+              <span className="font-semibold text-slate-900">
+                {coordinators.find((c) => c.id === transferTarget?.reportsToId)?.fullName || "Koordinatorsiz"}
+              </span>
+            </p>
+            <div className="space-y-1.5">
+              <Label>Yangi koordinator</Label>
+              <Select value={transferCoordId} onValueChange={setTransferCoordId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Koordinatorni tanlang" />
+                </SelectTrigger>
+                <SelectContent>
+                  {coordinators
+                    .filter((c) => c.id !== transferTarget?.reportsToId)
+                    .map((c) => (
+                      <SelectItem key={c.id} value={String(c.id)}>
+                        {c.fullName}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setTransferTarget(null)}>
+              Bekor
+            </Button>
+            <Button
+              type="button"
+              disabled={!transferCoordId || transferBranch.isPending}
+              onClick={() => {
+                if (!transferTarget || !transferCoordId) return;
+                transferBranch.mutate(
+                  {
+                    employeeId: transferTarget.id,
+                    coordinatorEmployeeId: Number(transferCoordId),
+                  },
+                  {
+                    onSuccess: (data) => {
+                      setTransferTarget(null);
+                      setTransferCoordId("");
+                      setExpandedId(null);
+                      void refetch();
+                      toast({ title: "Koordinator o‘zgardi", description: data.message });
+                    },
+                    onError: (err: Error) => {
+                      toast({ title: "O‘tkazilmadi", description: err.message, variant: "destructive" });
+                    },
+                  },
+                );
+              }}
+            >
+              {transferBranch.isPending ? "O‘tkazilmoqda…" : "O‘tkazish"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!removeBranchTarget} onOpenChange={(open) => !open && setRemoveBranchTarget(null)}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Filial o‘chirilsinmi?</AlertDialogTitle>
+            <AlertDialogDescription>
+              «{removeBranchTarget?.name}» xarita, davomat, bot va bazadan ketadi. Ichidagi xodimlar ham o‘chadi.
+              Shu oyda kelganlar bo‘shatilganlarga o‘tadi va davomat hisobotida shu oygacha qoladi.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Bekor</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-rose-600 text-white hover:bg-rose-700"
+              disabled={removeBranch.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (!removeBranchTarget) return;
+                removeBranch.mutate(removeBranchTarget.id, {
+                  onSuccess: (data) => {
+                    setRemoveBranchTarget(null);
+                    setExpandedId(null);
+                    void refetch();
+                    toast({ title: "Filial o‘chirildi", description: data.message });
+                  },
+                  onError: (err: Error) => {
+                    toast({ title: "O‘chirilmadi", description: err.message, variant: "destructive" });
+                  },
+                });
+              }}
+            >
+              {removeBranch.isPending ? "O‘chirilmoqda…" : "Filialni o‘chirish"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}

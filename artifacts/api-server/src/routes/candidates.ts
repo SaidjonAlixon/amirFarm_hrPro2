@@ -1,0 +1,529 @@
+import { Router, type IRouter } from "express";
+import { eq, and, ne, or } from "drizzle-orm";
+import { scriptIncludes } from "../lib/script-search";
+import { db, candidatesTable, vacanciesTable, usersTable, notificationsTable } from "@workspace/db";
+import type { AuthRequest } from "../middlewares/auth";
+import { requireAuth } from "../middlewares/auth";
+import { canDeleteCandidateRecord, deleteCandidateCascade } from "../lib/delete-candidate";
+import {
+  canManageCandidate,
+  canViewCandidate,
+  isHrManager,
+  isRecruiterScoped,
+  assertAssignableUser,
+} from "../lib/candidate-access";
+import {
+  applyPipelineAction,
+  normalizeStep,
+  parsePipeline,
+  type PipelineData,
+  type PipelineStep,
+} from "../lib/hire-pipeline";
+
+const router: IRouter = Router();
+
+const PIPELINE_STAGES = [
+  { key: "phone_interview", label: "Tanishuv" },
+  { key: "online_interview", label: "Onlayn suhbat" },
+  { key: "preboarding", label: "Pre-boarding" },
+  { key: "offline_interview", label: "Offline suhbat" },
+  { key: "final_decision", label: "Yakuniy qaror" },
+  { key: "offer", label: "Job offer" },
+  { key: "documents", label: "Hujjatlar" },
+  { key: "internship", label: "Stajirovka" },
+  { key: "hired", label: "Ishga qabul" },
+];
+
+async function getCandidateFull(id: number) {
+  const [row] = await db
+    .select({
+      id: candidatesTable.id,
+      fullName: candidatesTable.fullName,
+      birthDate: candidatesTable.birthDate,
+      phone: candidatesTable.phone,
+      address: candidatesTable.address,
+      photoUrl: candidatesTable.photoUrl,
+      education: candidatesTable.education,
+      experience: candidatesTable.experience,
+      expectedSalary: candidatesTable.expectedSalary,
+      notes: candidatesTable.notes,
+      vacancyId: candidatesTable.vacancyId,
+      vacancyTitle: vacanciesTable.title,
+      vacancyDescription: vacanciesTable.description,
+      vacancySalary: vacanciesTable.salaryRange,
+      vacancySchedule: vacanciesTable.schedule,
+      vacancyLocation: vacanciesTable.location,
+      recruiterId: candidatesTable.recruiterId,
+      recruiterName: usersTable.fullName,
+      stage: candidatesTable.stage,
+      status: candidatesTable.status,
+      pipelineStep: candidatesTable.pipelineStep,
+      pipelineJson: candidatesTable.pipelineJson,
+      createdAt: candidatesTable.createdAt,
+    })
+    .from(candidatesTable)
+    .leftJoin(vacanciesTable, eq(candidatesTable.vacancyId, vacanciesTable.id))
+    .leftJoin(usersTable, eq(candidatesTable.recruiterId, usersTable.id))
+    .where(eq(candidatesTable.id, id));
+  return row ?? null;
+}
+
+router.get("/candidates", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  const { vacancyId, stage, status, recruiterId, search, flow } = req.query as Record<string, string>;
+
+  const conditions = [];
+  if (vacancyId) conditions.push(eq(candidatesTable.vacancyId, parseInt(vacancyId, 10)));
+  if (flow === "yangi") {
+    conditions.push(eq(candidatesTable.status, "active"));
+    conditions.push(eq(candidatesTable.stage, "new"));
+  } else if (flow === "jarayonda") {
+    conditions.push(eq(candidatesTable.status, "active"));
+    conditions.push(ne(candidatesTable.stage, "new"));
+    conditions.push(ne(candidatesTable.stage, "hired"));
+  } else if (flow === "qabul") {
+    conditions.push(
+      or(eq(candidatesTable.status, "hired"), eq(candidatesTable.stage, "hired"))!,
+    );
+  } else if (flow === "rad") {
+    conditions.push(eq(candidatesTable.status, "rejected"));
+  } else {
+    if (stage) conditions.push(eq(candidatesTable.stage, stage));
+    if (status) conditions.push(eq(candidatesTable.status, status));
+  }
+
+  // Rekruter faqat o'ziga biriktirilgan nomzodlarni ko'radi
+  if (isRecruiterScoped(req.userRole) && req.userId) {
+    conditions.push(eq(candidatesTable.recruiterId, req.userId));
+  } else if (recruiterId) {
+    conditions.push(eq(candidatesTable.recruiterId, parseInt(recruiterId, 10)));
+  }
+
+  const baseQuery = db
+    .select({
+      id: candidatesTable.id,
+      fullName: candidatesTable.fullName,
+      birthDate: candidatesTable.birthDate,
+      phone: candidatesTable.phone,
+      address: candidatesTable.address,
+      photoUrl: candidatesTable.photoUrl,
+      education: candidatesTable.education,
+      experience: candidatesTable.experience,
+      expectedSalary: candidatesTable.expectedSalary,
+      notes: candidatesTable.notes,
+      vacancyId: candidatesTable.vacancyId,
+      vacancyTitle: vacanciesTable.title,
+      recruiterId: candidatesTable.recruiterId,
+      recruiterName: usersTable.fullName,
+      stage: candidatesTable.stage,
+      status: candidatesTable.status,
+      pipelineStep: candidatesTable.pipelineStep,
+      pipelineJson: candidatesTable.pipelineJson,
+      createdAt: candidatesTable.createdAt,
+    })
+    .from(candidatesTable)
+    .leftJoin(vacanciesTable, eq(candidatesTable.vacancyId, vacanciesTable.id))
+    .leftJoin(usersTable, eq(candidatesTable.recruiterId, usersTable.id));
+
+  const rows = conditions.length
+    ? await baseQuery.where(and(...conditions)).orderBy(candidatesTable.createdAt)
+    : await baseQuery.orderBy(candidatesTable.createdAt);
+
+  res.json(
+    search
+      ? rows.filter((r) =>
+          scriptIncludes([r.fullName, r.phone, r.vacancyTitle, r.address].filter(Boolean).join(" "), search),
+        )
+      : rows,
+  );
+});
+
+router.post("/candidates", async (req, res): Promise<void> => {
+  const { fullName, phone, vacancyId, birthDate, address, education, experience, expectedSalary, notes, recruiterId } = req.body ?? {};
+  if (!fullName || !phone || !vacancyId) {
+    res.status(400).json({ error: "Majburiy maydonlar to'ldirilmagan" });
+    return;
+  }
+  const [created] = await db
+    .insert(candidatesTable)
+    .values({
+      fullName,
+      phone,
+      vacancyId: parseInt(vacancyId, 10),
+      birthDate: birthDate ?? null,
+      address: address ?? null,
+      education: education ?? null,
+      experience: experience ?? null,
+      expectedSalary: expectedSalary ?? null,
+      notes: notes ?? null,
+      recruiterId: recruiterId ? parseInt(recruiterId, 10) : null,
+      stage: "new",
+      status: "active",
+      pipelineStep: "match",
+      pipelineJson: {},
+    })
+    .returning();
+  const full = await getCandidateFull(created.id);
+  res.status(201).json(full);
+});
+
+router.get("/candidates/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  const id = parseInt(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id, 10);
+  const row = await getCandidateFull(id);
+  if (!row) { res.status(404).json({ error: "Topilmadi" }); return; }
+  if (!canViewCandidate(req.userId, req.userRole, row.recruiterId)) {
+    res.status(403).json({ error: "Bu nomzod sizga biriktirilmagan" });
+    return;
+  }
+  res.json(row);
+});
+
+router.patch("/candidates/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  const id = parseInt(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id, 10);
+  const [existing] = await db
+    .select({
+      id: candidatesTable.id,
+      recruiterId: candidatesTable.recruiterId,
+      fullName: candidatesTable.fullName,
+      stage: candidatesTable.stage,
+      status: candidatesTable.status,
+      notes: candidatesTable.notes,
+      pipelineStep: candidatesTable.pipelineStep,
+      pipelineJson: candidatesTable.pipelineJson,
+    })
+    .from(candidatesTable)
+    .where(eq(candidatesTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Topilmadi" });
+    return;
+  }
+
+  const wantsReassign = req.body?.recruiterId !== undefined;
+  if (wantsReassign && !isHrManager(req.userRole)) {
+    res.status(403).json({ error: "Faqat HR mas'ulni o'zgartira oladi" });
+    return;
+  }
+
+  const otherKeys = Object.keys(req.body ?? {}).filter((k) => k !== "recruiterId");
+  if (otherKeys.length > 0 && !canManageCandidate(req.userId, req.userRole, existing.recruiterId)) {
+    res.status(403).json({ error: "Faqat biriktirilgan mas'ul va HR o'zgartira oladi" });
+    return;
+  }
+
+  if (!wantsReassign && !canManageCandidate(req.userId, req.userRole, existing.recruiterId)) {
+    res.status(403).json({ error: "Faqat biriktirilgan mas'ul va HR o'zgartira oladi" });
+    return;
+  }
+
+  // Pipeline qadam: advance | back | set | no_answer*
+  if (req.body?.pipelineAction) {
+    const action = String(req.body.pipelineAction) as
+      | "advance"
+      | "back"
+      | "set"
+      | "no_answer"
+      | "no_answer_cancel"
+      | "no_answer_continue";
+    const currentStep = normalizeStep(existing.pipelineStep, existing.status);
+    const currentData = parsePipeline(existing.pipelineJson);
+    let actor: { id: number; name: string; role: string } | undefined;
+    if (req.userId) {
+      const [actorRow] = await db
+        .select({ fullName: usersTable.fullName, role: usersTable.role })
+        .from(usersTable)
+        .where(eq(usersTable.id, req.userId));
+      if (actorRow?.fullName) {
+        actor = { id: req.userId, name: actorRow.fullName, role: actorRow.role };
+      }
+    }
+    const result = applyPipelineAction({
+      currentStep,
+      currentData,
+      action,
+      step: req.body.pipelineStep as PipelineStep | undefined,
+      patch: (req.body.pipelinePatch || {}) as Parameters<typeof applyPipelineAction>[0]["patch"],
+      actor,
+    });
+    if (result.error) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+
+    // Eslatma: rekruter / assignee ga
+    if (result.createReminder && req.userId) {
+      try {
+        const { remindersTable, reminderEventsTable } = await import("@workspace/db");
+        const targetUserId = existing.recruiterId || req.userId;
+        const due = new Date(result.createReminder.dueAt);
+        const [rem] = await db
+          .insert(remindersTable)
+          .values({
+            userId: targetUserId,
+            createdById: req.userId,
+            title: `Nomzod: ${existing.fullName} — telefon`,
+            description: `${result.createReminder.note}\n/candidates/${id}`,
+            dueAt: due,
+            notifyAt: due,
+            category: "check",
+            priority: "high",
+            notifySystem: true,
+            notifyTelegram: true,
+            status: "active",
+          })
+          .returning();
+        if (rem) {
+          await db.insert(reminderEventsTable).values({
+            reminderId: rem.id,
+            eventType: "created",
+            note: "Nomzod tel. javobsiz eslatmasi",
+            createdById: req.userId,
+          });
+          const attempts = result.data.noAnswer?.attempts || [];
+          const last = attempts[attempts.length - 1];
+          if (last && action === "no_answer") {
+            last.reminderId = rem.id;
+            result.data.noAnswer = {
+              ...result.data.noAnswer!,
+              attempts: [...attempts.slice(0, -1), last],
+            };
+          }
+          const { notifyUser } = await import("../lib/notify");
+          await notifyUser({
+            userId: targetUserId,
+            text: `📞 ${existing.fullName}: telefon ko‘tarmadi. Eslatma: ${due.toLocaleString("uz-UZ")}. /candidates/${id}`,
+            type: "candidate_no_answer",
+            linkUrl: `/candidates/${id}`,
+          });
+        }
+      } catch (err) {
+        console.warn("no_answer reminder failed", err);
+      }
+    }
+
+    await db
+      .update(candidatesTable)
+      .set({
+        pipelineStep: result.step,
+        pipelineJson: result.data,
+        stage: result.stage,
+        status: result.status,
+      })
+      .where(eq(candidatesTable.id, id));
+
+    if (result.status === "hired") {
+      const { resolveStaffingHireByCandidateId } = await import("../lib/staffing-alert");
+      await resolveStaffingHireByCandidateId(id);
+      try {
+        const { assignHireToHrs } = await import("../lib/pipeline-tasks");
+        await assignHireToHrs({
+          candidateId: id,
+          candidateName: existing.fullName,
+          createdById: req.userId!,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+
+    res.json(await getCandidateFull(id));
+    return;
+  }
+
+  const allowed = ["fullName", "birthDate", "phone", "address", "education", "experience", "expectedSalary", "notes", "stage", "status", "recruiterId", "photoUrl"];
+  const updates: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (req.body[key] === undefined) continue;
+    if (key === "recruiterId") {
+      if (!isHrManager(req.userRole)) continue;
+      const raw = req.body.recruiterId;
+      if (raw === null || raw === "") {
+        updates.recruiterId = null;
+      } else {
+        const assignee = await assertAssignableUser(parseInt(String(raw), 10));
+        if (!assignee) {
+          res.status(400).json({
+            error: "Mas'ul sifatida faqat rekruter, HR menejer yoki HR direktor tanlanadi",
+          });
+          return;
+        }
+        updates.recruiterId = assignee.id;
+      }
+    } else {
+      updates[key] = req.body[key];
+    }
+  }
+
+  // Soddalashtirilgan holat: decisionNote → notes oxiriga
+  const decisionNote = typeof req.body?.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+  if (decisionNote && (updates.status === "rejected" || updates.status === "hired" || updates.stage === "hired")) {
+    const prev = String(updates.notes ?? existing.notes ?? "").trim();
+    const stamp = new Date().toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" });
+    const label = updates.status === "rejected" ? "Rad izohi" : "Qabul izohi";
+    updates.notes = prev ? `${prev}\n\n[${stamp}] ${label}: ${decisionNote}` : `[${stamp}] ${label}: ${decisionNote}`;
+  }
+
+  if (updates.stage === "in_progress" && !updates.status) {
+    updates.status = "active";
+  }
+  if (updates.stage === "hired") {
+    updates.status = "hired";
+    updates.pipelineStep = "done";
+  }
+  if (updates.status === "hired" && !updates.stage) {
+    updates.stage = "hired";
+    updates.pipelineStep = "done";
+  }
+  if (updates.status === "rejected") {
+    // stage saqlanadi (qayerda rad etilgani)
+  }
+
+  if (Object.keys(updates).length === 0) {
+    if (req.body?.pipelineAction || req.body?.pipelinePatch) {
+      res.status(400).json({
+        error: "Pipeline qadami saqlanmadi — server yangilangan bo‘lishi kerak (API qayta ishga tushiring)",
+      });
+      return;
+    }
+    res.json(await getCandidateFull(id));
+    return;
+  }
+
+  await db.update(candidatesTable).set(updates).where(eq(candidatesTable.id, id));
+
+  if (
+    updates.recruiterId != null &&
+    updates.recruiterId !== existing.recruiterId &&
+    typeof updates.recruiterId === "number"
+  ) {
+    await db.insert(notificationsTable).values({
+      userId: updates.recruiterId,
+      text: `Sizga nomzod biriktirildi: "${existing.fullName}". Jarayonni davom ettiring.`,
+      type: "stage_change",
+      linkUrl: `/candidates/${id}`,
+    });
+  }
+
+  if (updates.status === "hired" || updates.stage === "hired") {
+    const { resolveStaffingHireByCandidateId } = await import("../lib/staffing-alert");
+    await resolveStaffingHireByCandidateId(id);
+  }
+
+  // Pipeline topshiriqlari — bosqich o‘tganda
+  try {
+    const {
+      assignOfferToRecruiter,
+      assignInternshipToTrainers,
+      assignHireToHrs,
+      cancelOpenPipelineTasks,
+      completePipelineStageTasks,
+    } = await import("../lib/pipeline-tasks");
+
+    if (updates.status === "rejected") {
+      await cancelOpenPipelineTasks(id);
+    } else if (updates.stage === "offer" && existing.stage !== "offer") {
+      await assignOfferToRecruiter({
+        candidateId: id,
+        candidateName: existing.fullName,
+        recruiterId: (updates.recruiterId as number | undefined) ?? existing.recruiterId,
+        createdById: req.userId!,
+      });
+    } else if (updates.stage === "internship" && existing.stage !== "internship") {
+      await assignInternshipToTrainers({
+        candidateId: id,
+        candidateName: existing.fullName,
+        createdById: req.userId!,
+      });
+    } else if (updates.stage === "hired" || updates.status === "hired") {
+      await assignHireToHrs({
+        candidateId: id,
+        candidateName: existing.fullName,
+        createdById: req.userId!,
+      });
+    } else if (updates.stage === "documents" && existing.stage !== "documents") {
+      await completePipelineStageTasks({ candidateId: id, stage: "offer" });
+      const { assignDocumentsToRecruiter } = await import("../lib/pipeline-tasks");
+      await assignDocumentsToRecruiter({
+        candidateId: id,
+        candidateName: existing.fullName,
+        recruiterId: existing.recruiterId,
+        createdById: req.userId!,
+      });
+    }
+  } catch (err) {
+    console.error("pipeline-tasks candidate patch", err);
+  }
+
+  const full = await getCandidateFull(id);
+  if (!full) { res.status(404).json({ error: "Topilmadi" }); return; }
+  res.json(full);
+});
+
+router.delete("/candidates/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!canDeleteCandidateRecord(req.userRole)) {
+    res.status(403).json({ error: "Nomzodni o‘chirish ruxsati yo‘q" });
+    return;
+  }
+
+  const id = parseInt(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id, 10);
+  const existing = await getCandidateFull(id);
+  if (!existing) {
+    res.status(404).json({ error: "Topilmadi" });
+    return;
+  }
+  // Rekruter — faqat o‘ziga biriktirilgan nomzodni o‘chiradi
+  if (req.userRole === "recruiter" && existing.recruiterId !== req.userId) {
+    res.status(403).json({ error: "Faqat o‘zingizga biriktirilgan nomzodni o‘chira olasiz" });
+    return;
+  }
+
+  const ok = await deleteCandidateCascade(id);
+  if (!ok) {
+    res.status(404).json({ error: "Topilmadi" });
+    return;
+  }
+  res.status(204).send();
+});
+
+router.get("/candidates/:id/pipeline", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  const id = parseInt(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id, 10);
+  const candidate = await getCandidateFull(id);
+  if (!candidate) { res.status(404).json({ error: "Topilmadi" }); return; }
+  if (!canViewCandidate(req.userId, req.userRole, candidate.recruiterId)) {
+    res.status(403).json({ error: "Bu nomzod sizga biriktirilmagan" });
+    return;
+  }
+
+  const currentStage = candidate.stage;
+  const currentIdx = PIPELINE_STAGES.findIndex((s) => s.key === currentStage);
+
+  const stages = PIPELINE_STAGES.map((s, idx) => {
+    let status: string;
+    if (candidate.status === "rejected" && (s.key === currentStage || idx === currentIdx)) {
+      status = idx < currentIdx ? "completed" : idx === currentIdx ? "failed" : "pending";
+    } else if (candidate.status === "hired" || currentStage === "hired") {
+      // Ishga qabul qilinganda 1–9 qadamlarning hammasi yashil ✓
+      status = "completed";
+    } else if (idx < currentIdx) {
+      status = "completed";
+    } else if (idx === currentIdx) {
+      status = "in_progress";
+    } else {
+      status = "pending";
+    }
+    return {
+      key: s.key,
+      label: s.label,
+      status,
+      completedAt: status === "completed" ? candidate.createdAt : null,
+      details: null,
+    };
+  });
+
+  res.json({
+    candidateId: candidate.id,
+    candidateName: candidate.fullName,
+    currentStage,
+    stages,
+  });
+});
+
+export default router;

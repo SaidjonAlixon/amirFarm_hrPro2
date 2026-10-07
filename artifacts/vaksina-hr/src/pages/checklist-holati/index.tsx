@@ -1,0 +1,1000 @@
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  ClipboardCheck,
+  Download,
+  LayoutDashboard,
+  MapPin,
+  Search,
+  Store,
+  Trophy,
+  User,
+  CalendarDays,
+  Check,
+  X,
+  Info,
+  Filter,
+  Trash2,
+  Loader2,
+  Clock3,
+  Unlock,
+} from "lucide-react";
+import { useSearch } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
+import { canExportChecklistStatus, canViewChecklistStatus, canViewCoordinatorRanking, hasFullPlatformAccess, isDirectorRole } from "@/lib/roles";
+import {
+  downloadBranchAuditsExcel,
+  useBranchAuditsList,
+  useDeleteBranchAudit,
+  useVisitMonitor,
+  type BranchAudit,
+} from "@/lib/branch-audits-api";
+import { CoveragePanel } from "./coverage-panel";
+import { ChecklistDashboard, type ChecklistDashNav } from "./dashboard-panel";
+import { CoordinatorRankingBoard } from "./ranking-panel";
+import { VisitMonitorPanel } from "./visit-monitor-panel";
+import { PresenceUnlockPanel } from "./presence-unlock-panel";
+import { useI18n } from "@/i18n/I18nProvider";
+
+function scoreTone(pct: number) {
+  if (pct >= 85) return "text-emerald-600";
+  if (pct >= 70) return "text-amber-600";
+  return "text-rose-600";
+}
+
+function scoreBadge(pct: number) {
+  if (pct >= 85) return "bg-emerald-100 text-emerald-800";
+  if (pct >= 70) return "bg-amber-100 text-amber-900";
+  return "bg-rose-100 text-rose-800";
+}
+
+function scoreWord(pct: number) {
+  if (pct >= 85) return "A’lo";
+  if (pct >= 70) return "O‘rtacha";
+  return "Past";
+}
+
+function hm(iso?: string | null) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleTimeString("uz-UZ", {
+    timeZone: "Asia/Tashkent",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function VisitTimeLine({ a }: { a: BranchAudit }) {
+  const keldim = hm(a.visitCheckInAt);
+  const cheklist = hm(a.createdAt);
+  const ketdim = hm(a.visitCheckOutAt);
+  const stay =
+    a.visitCheckInAt && a.visitCheckOutAt
+      ? Math.round((new Date(a.visitCheckOutAt).getTime() - new Date(a.visitCheckInAt).getTime()) / 60_000)
+      : null;
+  const stayLabel =
+    stay == null || stay < 0 ? null : stay < 60 ? `${stay} daq` : `${Math.floor(stay / 60)} soat ${stay % 60} daq`;
+  return (
+    <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] tabular-nums">
+      <span className="font-semibold text-emerald-700 dark:text-emerald-400">Keldim {keldim ?? "—"}</span>
+      <span className="text-muted-foreground">→</span>
+      <span className="font-semibold text-sky-700 dark:text-sky-300">Cheklist {cheklist ?? "—"}</span>
+      <span className="text-muted-foreground">→</span>
+      <span className={cn("font-semibold", ketdim ? "text-rose-700 dark:text-rose-400" : "text-amber-600")}>
+        Ketdim {ketdim ?? "hali yo‘q"}
+      </span>
+      {stayLabel ? <span className="text-muted-foreground">· filialda {stayLabel}</span> : null}
+    </p>
+  );
+}
+
+function formatWhen(visitDate: string, createdAt?: string) {
+  const time = createdAt
+    ? new Date(createdAt).toLocaleTimeString("uz-UZ", {
+        timeZone: "Asia/Tashkent",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "";
+  const [y, m, d] = visitDate.split("-");
+  const date = y && m && d ? `${d}.${m}.${y}` : visitDate;
+  return time ? `${date} · ${time}` : date;
+}
+
+function mapsUrl(lat?: number | null, lng?: number | null) {
+  if (lat == null || lng == null) return null;
+  return `https://www.google.com/maps?q=${lat},${lng}`;
+}
+
+const DATE_CHIP = [
+  "bg-sky-100 text-sky-800",
+  "bg-emerald-100 text-emerald-800",
+  "bg-amber-100 text-amber-900",
+  "bg-violet-100 text-violet-800",
+  "bg-rose-100 text-rose-800",
+  "bg-cyan-100 text-cyan-800",
+  "bg-orange-100 text-orange-800",
+  "bg-indigo-100 text-indigo-800",
+] as const;
+
+function dateChipClass(ymd: string) {
+  let n = 0;
+  for (let i = 0; i < ymd.length; i++) n = (n + ymd.charCodeAt(i) * (i + 1)) % DATE_CHIP.length;
+  return DATE_CHIP[n];
+}
+
+function visitLabel(count: number) {
+  return `${count} tashrif`;
+}
+
+function FilterField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col justify-end gap-1">
+      <Label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </Label>
+      {children}
+    </div>
+  );
+}
+
+export default function ChecklistHolatiPage() {
+  const { t } = useI18n();
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const search = useSearch();
+  const allowedFull = canViewChecklistStatus(user?.role);
+  const allowedRanking = canViewCoordinatorRanking(user?.role);
+  const isCoordOnly = user?.role === "koordinator";
+  const canApproveUnlock =
+    hasFullPlatformAccess(user?.role) ||
+    user?.role === "admin" ||
+    isDirectorRole(user?.role);
+
+  const [q, setQ] = useState("");
+  const [coordinatorId, setCoordinatorId] = useState<string>("all");
+  const [branchKey, setBranchKey] = useState<string>("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [scoreBand, setScoreBand] = useState<"all" | "excellent" | "mid" | "low">("all");
+  const [gpsFilter, setGpsFilter] = useState<"all" | "yes" | "no">("all");
+  const [coverageFocus, setCoverageFocus] = useState<string | undefined>();
+  const [viewing, setViewing] = useState<BranchAudit | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [tab, setTab] = useState("dashboard");
+
+  useEffect(() => {
+    const sp = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+    const qTab = sp.get("tab");
+    if (qTab === "ruxsat" || qTab === "unlock" || sp.get("unlock") === "1") {
+      if (canApproveUnlock) setTab("ruxsat");
+    } else if (qTab === "vaqt" || qTab === "visits") {
+      setTab(qTab === "visits" ? "tashriflar" : "vaqt");
+    } else if (qTab === "dashboard" || qTab === "reyting" || qTab === "tashriflar" || qTab === "qamrov") {
+      setTab(qTab);
+    }
+  }, [search, canApproveUnlock]);
+
+  const { data: audits = [], isLoading } = useBranchAuditsList(
+    {
+      from: from || undefined,
+      to: to || undefined,
+    },
+    allowedFull && !isCoordOnly,
+  );
+  const { data: monitor } = useVisitMonitor({}, allowedFull && canApproveUnlock);
+  const unlockCount = useMemo(
+    () => (monitor?.items ?? []).filter((v) => v.stillOpen && v.presenceBlocked).length,
+    [monitor],
+  );
+  const deleteAudit = useDeleteBranchAudit();
+  const canAdminDelete = hasFullPlatformAccess(user?.role);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  async function handleDeleteAudit(a: BranchAudit) {
+    if (!canAdminDelete) return;
+    const label = a.branchLocation || t("ui.branch");
+    if (
+      !window.confirm(
+        `"${label}" — ${formatWhen(a.visitDate, a.createdAt)} cheklistini butunlay o‘chirasizmi?\n\nDashboard, qamrov va tarixdan ham yo‘qoladi.`,
+      )
+    ) {
+      return;
+    }
+    setDeletingId(a.id);
+    try {
+      await deleteAudit.mutateAsync(a.id);
+      if (viewing?.id === a.id) setViewing(null);
+      toast({ title: "Cheklist o‘chirildi", description: "Barcha joylardan olib tashlandi" });
+    } catch (e: any) {
+      toast({
+        title: "O‘chirilmadi",
+        description: e?.message || t("ui.error"),
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const coordinators = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const a of audits) {
+      if (!map.has(a.coordinatorId)) {
+        map.set(a.coordinatorId, a.coordinatorName || `${t("checklist.coord")} #${a.coordinatorId}`);
+      }
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], "uz"));
+  }, [audits]);
+
+  const branches = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of audits) {
+      if (coordinatorId !== "all" && String(a.coordinatorId) !== coordinatorId) continue;
+      const key = String(a.managerEmployeeId);
+      const label = a.branchLocation || a.managerName || t("ui.branch");
+      if (!map.has(key)) map.set(key, label);
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], "uz"));
+  }, [audits, coordinatorId]);
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return audits.filter((a) => {
+      if (coordinatorId !== "all" && String(a.coordinatorId) !== coordinatorId) return false;
+      if (branchKey !== "all" && String(a.managerEmployeeId) !== branchKey) return false;
+      if (scoreBand === "excellent" && a.scorePercent < 85) return false;
+      if (scoreBand === "mid" && (a.scorePercent < 70 || a.scorePercent >= 85)) return false;
+      if (scoreBand === "low" && a.scorePercent >= 70) return false;
+      if (gpsFilter === "yes" && (a.checkLatitude == null || a.checkLongitude == null)) return false;
+      if (gpsFilter === "no" && a.checkLatitude != null && a.checkLongitude != null) return false;
+      if (!needle) return true;
+      return (
+        String(a.branchLocation || "").toLowerCase().includes(needle) ||
+        String(a.managerName || "").toLowerCase().includes(needle) ||
+        String(a.coordinatorName || "").toLowerCase().includes(needle) ||
+        String(a.visitName || "").toLowerCase().includes(needle)
+      );
+    });
+  }, [audits, coordinatorId, branchKey, q, scoreBand, gpsFilter]);
+
+  const stats = useMemo(() => {
+    const branchSet = new Set(filtered.map((a) => a.managerEmployeeId));
+    const coordSet = new Set(filtered.map((a) => a.coordinatorId));
+    const avg =
+      filtered.length === 0
+        ? 0
+        : Math.round(filtered.reduce((s, a) => s + a.scorePercent, 0) / filtered.length);
+    return {
+      visits: filtered.length,
+      branches: branchSet.size,
+      coordinators: coordSet.size,
+      avg,
+    };
+  }, [filtered]);
+
+  const byCoordinator = useMemo(() => {
+    const map = new Map<
+      string,
+      { id: string; name: string; visits: number; avg: number; last: string; scores: number[] }
+    >();
+    for (const a of filtered) {
+      const key = String(a.coordinatorId);
+      const cur = map.get(key) ?? {
+        id: key,
+        name: a.coordinatorName || t("checklist.coord"),
+        visits: 0,
+        avg: 0,
+        last: a.visitDate,
+        scores: [],
+      };
+      cur.visits += 1;
+      cur.scores.push(a.scorePercent);
+      if (a.visitDate > cur.last) cur.last = a.visitDate;
+      map.set(key, cur);
+    }
+    return [...map.values()]
+      .map((v) => ({
+        ...v,
+        avg: Math.round(v.scores.reduce((s, n) => s + n, 0) / v.scores.length),
+      }))
+      .sort((a, b) => b.visits - a.visits);
+  }, [filtered]);
+
+  const byBranch = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        manager: string;
+        visits: number;
+        stamps: { id: number; visitDate: string; createdAt?: string }[];
+        avg: number;
+        scores: number[];
+      }
+    >();
+    for (const a of filtered) {
+      const key = String(a.managerEmployeeId);
+      const cur = map.get(key) ?? {
+        id: key,
+        name: a.branchLocation || t("ui.branch"),
+        manager: a.managerName || "—",
+        visits: 0,
+        stamps: [],
+        avg: 0,
+        scores: [],
+      };
+      cur.visits += 1;
+      cur.stamps.push({ id: a.id, visitDate: a.visitDate, createdAt: a.createdAt });
+      cur.scores.push(a.scorePercent);
+      map.set(key, cur);
+    }
+    return [...map.values()]
+      .map((v) => ({
+        ...v,
+        avg: Math.round(v.scores.reduce((s, n) => s + n, 0) / v.scores.length),
+        stamps: [...v.stamps].sort((a, b) =>
+          String(b.createdAt || b.visitDate).localeCompare(String(a.createdAt || a.visitDate)),
+        ),
+      }))
+      .sort((a, b) => {
+        const aLast = a.stamps[0] ? String(a.stamps[0].createdAt || a.stamps[0].visitDate) : "";
+        const bLast = b.stamps[0] ? String(b.stamps[0].createdAt || b.stamps[0].visitDate) : "";
+        if (bLast !== aLast) return bLast.localeCompare(aLast);
+        return b.visits - a.visits;
+      });
+  }, [filtered]);
+
+  function openVisits(nav: ChecklistDashNav = {}) {
+    setCoordinatorId(nav.coordinatorId ?? "all");
+    setBranchKey(nav.branchKey ?? "all");
+    setFrom(nav.from ?? "");
+    setTo(nav.to ?? "");
+    setScoreBand(nav.scoreBand ?? "all");
+    setGpsFilter(nav.gps ?? "all");
+    setTab("tashriflar");
+  }
+
+  function openCoverage(coordinatorId?: string) {
+    setCoverageFocus(coordinatorId);
+    setTab("qamrov");
+  }
+
+  async function handleExcel() {
+    setExporting(true);
+    try {
+      await downloadBranchAuditsExcel({
+        coordinatorId: coordinatorId !== "all" ? Number(coordinatorId) : null,
+        managerId: branchKey !== "all" ? Number(branchKey) : null,
+        from: from || undefined,
+        to: to || undefined,
+        q: q.trim() || undefined,
+      });
+    } catch (e: any) {
+      toast({ title: "Excel yuklanmadi", description: e?.message, variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  if (!allowedFull && !allowedRanking) {
+    return (
+      <div className="rounded-2xl border bg-card p-8 text-center shadow-sm">
+        <Info className="mx-auto h-10 w-10 text-muted-foreground" />
+        <h2 className="mt-3 text-lg font-semibold">Ruxsat yo‘q</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Cheklist holatini admin, direktor, HR va auditor ko‘radi.
+        </p>
+      </div>
+    );
+  }
+
+  if (isCoordOnly) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-4 pb-10 sm:space-y-6">
+        <div className="hero-dark relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#0b3a5c] via-[#0b1a2e] to-[#06101c] px-4 py-5 shadow-lg sm:px-6 sm:py-7">
+          <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-cyan-400/10 blur-2xl" />
+          <div className="relative">
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-cyan-100">
+              <ClipboardCheck className="h-3.5 w-3.5" />
+              Koordinatorlar
+            </div>
+            <h1 className="text-xl font-bold tracking-tight text-white sm:text-3xl">Reyting</h1>
+            <p className="mt-1.5 max-w-xl text-xs text-white/80 sm:text-sm">
+              Kunlik, haftalik va oylik natija — tashrif, ball, qamrov va GPS asosida.
+            </p>
+          </div>
+        </div>
+        <CoordinatorRankingBoard enabled={allowedRanking} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto w-full max-w-none space-y-4 pb-10 sm:space-y-6">
+      <div className="hero-dark relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#0b3a5c] via-[#0b1a2e] to-[#06101c] px-4 py-5 shadow-lg sm:px-6 sm:py-7">
+        <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-cyan-400/10 blur-2xl" />
+        <div className="relative flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-cyan-100">
+              <ClipboardCheck className="h-3.5 w-3.5" />
+              Nazorat · Tashriflar
+            </div>
+            <h1 className="text-xl font-bold tracking-tight text-white sm:text-3xl">{t("checklist.statusTitle")}</h1>
+            <p className="mt-1.5 max-w-xl text-xs text-white/80 sm:text-sm">
+              Koordinatorlar filialga qachon kelgani, cheklistni qanday to‘ldirgani va qancha vaqt qolgani —
+              bitta joyda.
+            </p>
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-[11px] text-cyan-100 ring-1 ring-white/15">
+              <CalendarDays className="h-3.5 w-3.5" />
+              Hisob 1-oktyabr 2026 dan boshlab · har filialga oyiga 4 tagacha tashrif
+            </p>
+          </div>
+          {tab === "tashriflar" && canExportChecklistStatus(user?.role) && (
+            <Button
+              variant="secondary"
+              className="w-full border-white/25 bg-white/10 text-white hover:bg-white/20 sm:w-auto"
+              onClick={() => void handleExcel()}
+              disabled={exporting || filtered.length === 0}
+            >
+              <Download className="mr-1.5 h-4 w-4" />
+              {exporting ? t("ui.loading") : t("checklist.excelExport")}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <Tabs value={tab} onValueChange={setTab} className="space-y-4">
+        <TabsList
+          className={cn(
+            "grid h-auto w-full gap-1",
+            canApproveUnlock
+              ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6"
+              : "grid-cols-2 sm:grid-cols-5",
+          )}
+        >
+          <TabsTrigger value="dashboard" className="h-11 px-2 text-xs sm:h-10 sm:text-sm">
+            <LayoutDashboard className="h-3.5 w-3.5 shrink-0" />
+            {t("checklist.tab.dashboard")}
+          </TabsTrigger>
+          {canApproveUnlock ? (
+            <TabsTrigger
+              value="ruxsat"
+              className="h-11 gap-1 px-2 text-xs font-semibold text-rose-700 data-[state=active]:bg-rose-600 data-[state=active]:text-white sm:h-10 sm:text-sm dark:text-rose-300"
+            >
+              <Unlock className="h-3.5 w-3.5 shrink-0" />
+              Ruxsat berish
+              {unlockCount > 0 ? (
+                <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white">
+                  {unlockCount}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          ) : null}
+          <TabsTrigger value="vaqt" className="h-11 px-2 text-xs sm:h-10 sm:text-sm">
+            <Clock3 className="h-3.5 w-3.5 shrink-0" />
+            Vaqt
+          </TabsTrigger>
+          <TabsTrigger value="reyting" className="h-11 px-2 text-xs sm:h-10 sm:text-sm">
+            <Trophy className="h-3.5 w-3.5 shrink-0" />
+            {t("checklist.tab.ranking")}
+          </TabsTrigger>
+          <TabsTrigger value="tashriflar" className="h-11 px-2 text-xs sm:h-10 sm:text-sm">
+            <ClipboardCheck className="h-3.5 w-3.5 shrink-0" />
+            {t("checklist.tab.visits")}
+          </TabsTrigger>
+          <TabsTrigger value="qamrov" className="h-11 px-2 text-xs sm:h-10 sm:text-sm">
+            <Store className="h-3.5 w-3.5 shrink-0" />
+            <span className="sm:hidden">{t("checklist.tab.coverage")}</span>
+            <span className="hidden sm:inline">{t("checklist.tab.coverageFull")}</span>
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="dashboard" className="mt-0">
+          <ChecklistDashboard
+            enabled={allowedFull}
+            onOpenVisits={openVisits}
+            onOpenCoverage={openCoverage}
+            onOpenVisit={(a) => setViewing(a)}
+          />
+        </TabsContent>
+        {canApproveUnlock ? (
+          <TabsContent value="ruxsat" className="mt-0">
+            <PresenceUnlockPanel enabled={allowedFull && canApproveUnlock} />
+          </TabsContent>
+        ) : null}
+        <TabsContent value="vaqt" className="mt-0">
+          <VisitMonitorPanel enabled={allowedFull} />
+        </TabsContent>
+        <TabsContent value="reyting" className="mt-0">
+          <CoordinatorRankingBoard
+            enabled={allowedRanking}
+            onOpenCoordinator={(id) => {
+              setCoordinatorId(id);
+              setBranchKey("all");
+              setTab("tashriflar");
+            }}
+          />
+        </TabsContent>
+        <TabsContent value="tashriflar" className="mt-0 space-y-4 sm:space-y-6">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+        <Stat label={t("checklist.stat.visits")} value={String(stats.visits)} />
+        <Stat label={t("checklist.stat.branches")} value={String(stats.branches)} />
+        <Stat label={t("checklist.stat.coords")} value={String(stats.coordinators)} />
+        <Stat label={t("checklist.stat.avg")} value={`${stats.avg}%`} valueClass={scoreTone(stats.avg)} />
+      </div>
+
+      <div className="rounded-2xl border bg-card p-3 shadow-sm sm:p-4">
+        <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <Filter className="h-3.5 w-3.5" />
+          {t("checklist.filter")}
+        </div>
+        <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+          <FilterField label={t("ui.search")}>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={t("ui.search")}
+                className="h-11 pl-9"
+              />
+            </div>
+          </FilterField>
+          <FilterField label={t("checklist.coord")}>
+            <Select
+              value={coordinatorId}
+              onValueChange={(v) => {
+                setCoordinatorId(v);
+                setBranchKey("all");
+              }}
+            >
+              <SelectTrigger className="h-11 w-full">
+                <SelectValue placeholder={t("checklist.coord")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("pharmacy.allCoords")}</SelectItem>
+                {coordinators.map(([id, name]) => (
+                  <SelectItem key={id} value={String(id)}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FilterField>
+          <FilterField label={t("ui.branch")}>
+            <Select value={branchKey} onValueChange={setBranchKey}>
+              <SelectTrigger className="h-11 w-full">
+                <SelectValue placeholder={t("ui.branch")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("ui.allBranches")}</SelectItem>
+                {branches.map(([id, name]) => (
+                  <SelectItem key={id} value={id}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FilterField>
+          <FilterField label={t("checklist.from")}>
+            <Input type="date" min="2026-10-01" className="h-11" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </FilterField>
+          <FilterField label={t("checklist.to")}>
+            <Input type="date" min="2026-10-01" className="h-11" value={to} onChange={(e) => setTo(e.target.value)} />
+          </FilterField>
+          <FilterField label={t("checklist.score")}>
+            <Select value={scoreBand} onValueChange={(v) => setScoreBand(v as typeof scoreBand)}>
+              <SelectTrigger className="h-11 w-full">
+                <SelectValue placeholder="Ball" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Barcha ball</SelectItem>
+                <SelectItem value="excellent">A’lo ≥85%</SelectItem>
+                <SelectItem value="mid">O‘rtacha 70–84%</SelectItem>
+                <SelectItem value="low">Past &lt;70%</SelectItem>
+              </SelectContent>
+            </Select>
+          </FilterField>
+          <FilterField label="GPS">
+            <Select value={gpsFilter} onValueChange={(v) => setGpsFilter(v as typeof gpsFilter)}>
+              <SelectTrigger className="h-11 w-full">
+                <SelectValue placeholder="GPS" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Barchasi</SelectItem>
+                <SelectItem value="yes">GPS bor</SelectItem>
+                <SelectItem value="no">GPS yo‘q</SelectItem>
+              </SelectContent>
+            </Select>
+          </FilterField>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+          <div className="border-b px-4 py-3">
+            <h2 className="text-sm font-semibold">Koordinatorlar bo‘yicha</h2>
+            <p className="text-[11px] text-muted-foreground">Tashrif soni · o‘rtacha ball</p>
+          </div>
+          <ul className="max-h-64 divide-y overflow-y-auto">
+            {byCoordinator.length === 0 ? (
+              <li className="px-4 py-6 text-center text-sm text-muted-foreground">Ma’lumot yo‘q</li>
+            ) : (
+              byCoordinator.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCoordinatorId(c.id);
+                      setBranchKey("all");
+                    }}
+                    className={cn(
+                      "flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left hover:bg-muted",
+                      coordinatorId === c.id && "bg-cyan-50",
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{c.name}</p>
+                      <p className="text-[11px] text-muted-foreground">Oxirgi: {formatWhen(c.last)}</p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-sm font-bold tabular-nums">{visitLabel(c.visits)}</p>
+                      <p className={cn("text-[11px] font-semibold", scoreTone(c.avg))}>{c.avg}%</p>
+                    </div>
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+        <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+          <div className="border-b px-4 py-3">
+            <h2 className="text-sm font-semibold">Filiallar bo‘yicha</h2>
+            <p className="text-[11px] text-muted-foreground">Oxirgi tashrif tepada · sanalar</p>
+          </div>
+          <ul className="max-h-64 divide-y overflow-y-auto">
+            {byBranch.length === 0 ? (
+              <li className="px-4 py-6 text-center text-sm text-muted-foreground">Ma’lumot yo‘q</li>
+            ) : (
+              byBranch.map((b) => (
+                <li key={b.id}>
+                  <button
+                    type="button"
+                    onClick={() => setBranchKey(b.id)}
+                    className={cn(
+                      "w-full px-4 py-2.5 text-left hover:bg-muted",
+                      branchKey === b.id && "bg-cyan-50",
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{b.name}</p>
+                        <p className="truncate text-[11px] text-muted-foreground">{b.manager}</p>
+                      </div>
+                      <p className="shrink-0 text-sm font-bold tabular-nums">{visitLabel(b.visits)}</p>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {b.stamps.slice(0, 8).map((s) => (
+                        <span
+                          key={s.id}
+                          className={cn(
+                            "inline-flex rounded-md px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
+                            dateChipClass(s.visitDate),
+                          )}
+                        >
+                          {formatWhen(s.visitDate, s.createdAt)}
+                        </span>
+                      ))}
+                      {b.stamps.length > 8 ? (
+                        <span className="inline-flex rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-foreground/70">
+                          +{b.stamps.length - 8}
+                        </span>
+                      ) : null}
+                    </div>
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+        <div className="border-b px-4 py-3">
+          <h2 className="text-sm font-semibold sm:text-base">Barcha tashriflar</h2>
+        </div>
+        {isLoading ? (
+          <p className="px-4 py-10 text-center text-sm text-muted-foreground">Yuklanmoqda…</p>
+        ) : filtered.length === 0 ? (
+          <div className="px-4 py-10 text-center">
+            <ClipboardCheck className="mx-auto h-8 w-8 text-muted-foreground/40" />
+            <p className="mt-2 text-sm font-medium text-foreground">Hali cheklist yo‘q</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Koordinator filialda «Keldim» qilib cheklistni saqlaganda shu yerda paydo bo‘ladi.
+            </p>
+          </div>
+        ) : (
+          <ul className="divide-y">
+            {filtered.map((a) => {
+              const map = mapsUrl(a.checkLatitude, a.checkLongitude);
+              const busy = deletingId === a.id || (deleteAudit.isPending && deletingId === a.id);
+              return (
+                <li key={a.id} className="px-3 py-3 sm:px-4">
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setViewing(a)}
+                      className="min-w-0 flex-1 rounded-xl text-left transition hover:bg-muted"
+                    >
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-semibold text-foreground">
+                              {a.branchLocation || t("ui.branch")}
+                            </p>
+                            <Badge className={cn("font-bold", scoreBadge(a.scorePercent))}>
+                              {a.scorePercent}% · {scoreWord(a.scorePercent)}
+                            </Badge>
+                            <Badge variant="secondary" className="font-normal">
+                              {a.visitName}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                              <CalendarDays className="h-3.5 w-3.5" />
+                              {formatWhen(a.visitDate, a.createdAt)}
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <Store className="h-3.5 w-3.5" />
+                              Mudir: {a.managerName || "—"}
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <User className="h-3.5 w-3.5" />
+                              {a.coordinatorName || t("checklist.coord")}
+                            </span>
+                          </p>
+                          <VisitTimeLine a={a} />
+                          <p className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                            <span className="text-emerald-700">Ha {a.yesCount}</span>
+                            <span className="text-rose-700">Yo‘q {a.noCount}</span>
+                            {map ? (
+                              <a
+                                href={map}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center gap-1 font-medium text-sky-700 underline-offset-2 hover:underline"
+                              >
+                                <MapPin className="h-3.5 w-3.5" />
+                                Lokatsiya
+                                {a.distanceMeters != null ? ` · ${a.distanceMeters} m` : ""}
+                              </a>
+                            ) : (
+                              <span className="text-muted-foreground">GPS yo‘q</span>
+                            )}
+                          </p>
+                          {a.checkoutNote ? (
+                            <p className="mt-2 line-clamp-2 rounded-lg border border-sky-200/70 bg-sky-50/80 px-2.5 py-1.5 text-[11px] leading-snug text-sky-950 dark:border-sky-500/30 dark:bg-sky-950/40 dark:text-sky-100">
+                              <span className="font-semibold">Ketdim izohi: </span>
+                              {a.checkoutNote}
+                            </p>
+                          ) : null}
+                        </div>
+                        <span className="text-xs font-medium text-muted-foreground sm:pt-1">
+                          Batafsil →
+                        </span>
+                      </div>
+                    </button>
+                    {canAdminDelete ? (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="mt-0.5 h-9 w-9 shrink-0 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                        disabled={busy}
+                        title="Cheklistni o‘chirish"
+                        onClick={() => void handleDeleteAudit(a)}
+                      >
+                        {busy ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+        </TabsContent>
+        <TabsContent value="qamrov" className="mt-0">
+          <CoveragePanel enabled={allowedFull} focusCoordinator={coverageFocus} />
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
+        <DialogContent className="max-h-[88vh] w-[calc(100%-1.5rem)] max-w-2xl overflow-y-auto rounded-2xl p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle className="pr-6 text-base leading-snug sm:text-lg">
+              {viewing?.branchLocation} — {viewing?.scorePercent}%
+            </DialogTitle>
+          </DialogHeader>
+          {viewing && (
+            <div className="space-y-4 text-sm">
+              {canAdminDelete ? (
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="gap-1.5"
+                    disabled={deletingId === viewing.id}
+                    onClick={() => void handleDeleteAudit(viewing)}
+                  >
+                    {deletingId === viewing.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                    O‘chirish
+                  </Button>
+                </div>
+              ) : null}
+              <Progress value={viewing.scorePercent} className="h-2" />
+              <div className="grid gap-2 rounded-xl border bg-muted p-3 text-xs text-muted-foreground sm:grid-cols-2">
+                <p>
+                  <span className="font-semibold text-foreground">Sana / vaqt:</span>{" "}
+                  {formatWhen(viewing.visitDate, viewing.createdAt)}
+                </p>
+                <p>
+                  <span className="font-semibold text-foreground">Tashrif:</span> {viewing.visitName}
+                </p>
+                <p>
+                  <span className="font-semibold text-foreground">Mudir:</span> {viewing.managerName}
+                </p>
+                <p>
+                  <span className="font-semibold text-foreground">{t("checklist.coord")}:</span>{" "}
+                  {viewing.coordinatorName}
+                </p>
+                {viewing.checkLatitude != null && viewing.checkLongitude != null ? (
+                  <p className="sm:col-span-2">
+                    <span className="font-semibold text-foreground">Lokatsiya:</span>{" "}
+                    <a
+                      href={mapsUrl(viewing.checkLatitude, viewing.checkLongitude)!}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sky-700 underline"
+                    >
+                      {Number(viewing.checkLatitude).toFixed(5)}, {Number(viewing.checkLongitude).toFixed(5)}
+                    </a>
+                    {viewing.distanceMeters != null ? ` · ${viewing.distanceMeters} m` : ""}
+                  </p>
+                ) : null}
+              </div>
+              {viewing.checkoutNote ? (
+                <div className="rounded-xl border border-[#0b3a5c]/20 bg-gradient-to-br from-sky-50 to-card p-3 dark:border-sky-500/30 dark:from-sky-950/40">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#0b3a5c] dark:text-sky-300">
+                    Ketdim izohi — bu yerda nima qilindi
+                  </p>
+                  <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                    {viewing.checkoutNote}
+                  </p>
+                  {viewing.visitCheckOutAt ? (
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      Yopilgan:{" "}
+                      {new Date(viewing.visitCheckOutAt).toLocaleString("uz-UZ", {
+                        timeZone: "Asia/Tashkent",
+                      })}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                  Ketdim izohi hali yo‘q (koordinator «Tugatish»da yozganda paydo bo‘ladi)
+                </p>
+              )}
+              {viewing.generalNote ? (
+                <p className="rounded-lg bg-amber-50 p-3 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide">Cheklist eslatma · </span>
+                  {viewing.generalNote}
+                </p>
+              ) : null}
+              {viewing.categories?.map((cat) => (
+                <div key={cat.id}>
+                  <p className="mb-1.5 font-semibold text-foreground">{cat.title}</p>
+                  <ul className="space-y-1.5">
+                    {cat.items.map((it) => (
+                      <li
+                        key={it.id}
+                        className="flex items-start justify-between gap-2 rounded-lg border px-2.5 py-2"
+                      >
+                        <span className="min-w-0 leading-snug">
+                          {it.label}
+                          {it.note ? (
+                            <span className="mt-0.5 block text-[11px] text-muted-foreground">{it.note}</span>
+                          ) : null}
+                        </span>
+                        <Badge
+                          variant="secondary"
+                          className={
+                            it.answer === "yes"
+                              ? "shrink-0 bg-emerald-100 text-emerald-800"
+                              : it.answer === "no"
+                                ? "shrink-0 bg-rose-100 text-rose-800"
+                                : "shrink-0"
+                          }
+                        >
+                          {it.answer === "yes" ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Check className="h-3 w-3" /> Ha
+                            </span>
+                          ) : it.answer === "no" ? (
+                            <span className="inline-flex items-center gap-1">
+                              <X className="h-3 w-3" /> Yo‘q
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  valueClass,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="rounded-xl border bg-card px-3 py-2.5 shadow-sm sm:rounded-2xl sm:px-4 sm:py-3">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground sm:text-xs">
+        {label}
+      </p>
+      <p className={cn("mt-0.5 text-xl font-bold tabular-nums text-foreground sm:text-2xl", valueClass)}>
+        {value}
+      </p>
+    </div>
+  );
+}

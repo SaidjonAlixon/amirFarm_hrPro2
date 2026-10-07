@@ -1,0 +1,172 @@
+import { isDirectorRole, hasFullPlatformAccess, normalizeUserRole } from "./roles";
+import type { Vazifa } from "@/lib/vazifalar-api";
+
+/** To‘liq kuzatuv (Maxfiy + oddiy) — faqat sof admin */
+export const TASK_ALL_VISIBILITY_ROLES = new Set(["admin"]);
+
+/** Maxfiysiz barcha topshiriqlarni faqat ko‘rish (auditor va HR direktor) */
+export const TASK_AUDIT_BROWSE_ROLES = new Set(["hr_auditor", "hr_direktor"]);
+
+/** Qabul qilish muddati — yaratilgan (yoki qayta biriktirilgan) vaqtdan */
+export const ACCEPT_DEADLINE_MS: Record<string, number> = {
+  low: 24 * 60 * 60 * 1000,
+  normal: 16 * 60 * 60 * 1000,
+  high: 8 * 60 * 60 * 1000,
+  urgent: 4 * 60 * 60 * 1000,
+};
+
+export const ACCEPT_DEADLINE_HOURS: Record<string, number> = {
+  low: 24,
+  normal: 16,
+  high: 8,
+  urgent: 4,
+};
+
+export function acceptDeadlineMs(priority?: string | null) {
+  return ACCEPT_DEADLINE_MS[priority || "normal"] ?? ACCEPT_DEADLINE_MS.normal;
+}
+
+export function acceptDeadlineHours(priority?: string | null) {
+  return ACCEPT_DEADLINE_HOURS[priority || "normal"] ?? ACCEPT_DEADLINE_HOURS.normal;
+}
+
+/** Qabul oynasi yoqilganmi (meta.acceptWindowEnabled === false → o‘chirilgan) */
+export function isAcceptWindowEnabled(task: Pick<Vazifa, "meta">) {
+  const meta = task.meta as { acceptWindowEnabled?: boolean } | null | undefined;
+  return meta?.acceptWindowEnabled !== false;
+}
+
+/** Qabul oynasi boshlanishi: meta.acceptDeadlineBase yoki createdAt */
+export function acceptWindowStart(
+  task: Pick<Vazifa, "createdAt" | "meta">,
+): Date {
+  const base = (task.meta as { acceptDeadlineBase?: string } | null | undefined)
+    ?.acceptDeadlineBase;
+  if (base) {
+    const d = new Date(base);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return new Date(task.createdAt);
+}
+
+export function acceptDeadlineAt(
+  task: Pick<Vazifa, "createdAt" | "priority" | "meta">,
+): Date {
+  return new Date(acceptWindowStart(task).getTime() + acceptDeadlineMs(task.priority));
+}
+
+/**
+ * Muhimlik bo‘yicha qabul muddati o‘tgan va hali qabul qilinmagan (todo).
+ * Past 24s · O‘rta 16s · Yuqori 8s · Shoshilinch 4s.
+ * Agar acceptWindowEnabled=false — faqat asosiy muddat (dueAt) bo‘yicha kechikadi.
+ */
+export function isAcceptOverdue(
+  task: Pick<Vazifa, "status" | "createdAt" | "priority" | "acceptedAt" | "meta">,
+  now = new Date(),
+) {
+  if (!isAcceptWindowEnabled(task)) return false;
+  if (
+    task.status === "verified" ||
+    task.status === "cancelled" ||
+    task.status === "done" ||
+    task.status === "in_progress"
+  ) {
+    return false;
+  }
+  if (task.acceptedAt) return false;
+  if (task.status !== "todo") return false;
+  return now.getTime() > acceptDeadlineAt(task).getTime();
+}
+
+/** Muddat (dueAt) o‘tgan, hali yakunlanmagan */
+export function isDueDateOverdue(
+  task: Pick<Vazifa, "status" | "dueAt" | "createdAt">,
+  now = new Date(),
+) {
+  if (task.status === "verified" || task.status === "cancelled" || task.status === "done") {
+    return false;
+  }
+  const raw = task.dueAt || task.createdAt;
+  if (!raw) return false;
+  const due = new Date(raw);
+  if (Number.isNaN(due.getTime())) return false;
+  return now.getTime() > due.getTime();
+}
+
+/** Kechikkan: qabul muddati yoki bajarish muddati o‘tgan */
+export function isTaskOverdue(
+  task: Pick<
+    Vazifa,
+    "status" | "dueAt" | "createdAt" | "priority" | "acceptedAt" | "meta"
+  >,
+  now = new Date(),
+) {
+  return isAcceptOverdue(task, now) || isDueDateOverdue(task, now);
+}
+
+export function isTaskAdmin(role?: string | null) {
+  return hasFullPlatformAccess(role);
+}
+
+export function isTaskDirector(role?: string | null) {
+  return isDirectorRole(role);
+}
+
+/** Sof admin — Maxfiy va oddiy barcha topshiriqlarni kuzatadi */
+export function canSeePrivateTasks(role?: string | null) {
+  return TASK_ALL_VISIBILITY_ROLES.has(normalizeUserRole(role));
+}
+
+/** «Barchani» filtri: admin va direktor (to‘liq), HR direktor va auditor (oddiy, faqat ko‘rish) */
+export function canBrowseAllTasks(role?: string | null) {
+  const r = normalizeUserRole(role);
+  return (
+    TASK_ALL_VISIBILITY_ROLES.has(r) ||
+    TASK_AUDIT_BROWSE_ROLES.has(r) ||
+    isDirectorRole(r)
+  );
+}
+
+/** HR auditor va HR direktor — boshqalarning topshiriqlarini faqat ko‘rish */
+export function isTaskAuditViewer(role?: string | null) {
+  return TASK_AUDIT_BROWSE_ROLES.has(normalizeUserRole(role));
+}
+
+/**
+ * To‘liq tahrirlash (forma, mas’ulni o‘zgartirish):
+ * - admin, director — barcha
+ * - qolganlar (shu jumladan hr_direktor / hr_auditor) — faqat o‘zi yaratganini tahrirlaydi
+ */
+export function canManageTaskUi(
+  task: Pick<Vazifa, "createdById">,
+  userId?: number | null,
+  role?: string | null,
+) {
+  if (!userId) return false;
+  if (isTaskAdmin(role) || isTaskDirector(role)) return true;
+  return task.createdById === userId;
+}
+
+export function canApproveTaskUi(
+  task: Pick<Vazifa, "createdById">,
+  userId?: number | null,
+  role?: string | null,
+) {
+  if (!userId) return false;
+  return task.createdById === userId || isTaskAdmin(role) || isTaskDirector(role);
+}
+
+/**
+ * O‘chirish:
+ * - sof admin — ko‘rinadigan hammasi
+ * - boshqalar — faqat o‘zi yaratgan (qo‘ygan) vazifa
+ */
+export function canDeleteTaskUi(
+  task: Pick<Vazifa, "createdById">,
+  userId?: number | null,
+  role?: string | null,
+) {
+  if (!userId) return false;
+  if (canSeePrivateTasks(role)) return true;
+  return task.createdById === userId;
+}

@@ -1,0 +1,4341 @@
+import React, { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation } from "wouter";
+import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  useGetUsers,
+  useGetEmployees,
+  useGetDepartments,
+} from "@workspace/api-client-react";
+import { displayBranchName } from "@/lib/pharmacy-staff-api";
+import { scriptIncludes } from "@/lib/script-search";
+import { staffWorkplaceOf } from "@/lib/staff-workplace";
+import {
+  Plus,
+  Calendar,
+  Paperclip,
+  FileText,
+  Trash2,
+  CheckCircle2,
+  X,
+  User,
+  Flag,
+  Search,
+  Check,
+  ChevronsUpDown,
+  Clock,
+  Send,
+  BarChart3,
+  LayoutGrid,
+  List,
+  CalendarDays,
+  Folder,
+  MessageSquare,
+  MoreHorizontal,
+  FileSpreadsheet,
+  Archive,
+  LayoutTemplate,
+  AlertTriangle,
+  PlayCircle,
+  CircleDot,
+  ChevronLeft,
+  ChevronRight,
+  SlidersHorizontal,
+  RotateCcw,
+  Users,
+  CalendarClock,
+  SendHorizontal,
+  CheckSquare,
+  Square,
+  ArrowUpRight,
+  ArrowRight,
+  ArrowUpDown,
+  Building2,
+  Briefcase,
+  Zap,
+  ShieldCheck,
+  Sparkles,
+  Hourglass,
+  CalendarRange,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  canApproveTaskUi,
+  canBrowseAllTasks,
+  canDeleteTaskUi,
+  canManageTaskUi,
+  canSeePrivateTasks,
+  isTaskAuditViewer,
+  isTaskOverdue,
+} from "@/lib/vazifalar-permissions";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
+import { cn } from "@/lib/utils";
+import { htmlDescToPlain } from "@/lib/task-desc-html";
+import { Calendar as DayPickerCalendar } from "@/components/ui/calendar";
+import {
+  useGetTasks,
+  useCreateTask,
+  useUpdateTask,
+  useDeleteTask,
+  useCompleteTask,
+  useAcceptTask,
+  useRequestExtension,
+  useResolveExtension,
+  useVerifyTask,
+  useSendTaskMessage,
+  fileToAttachment,
+  type Vazifa,
+  type TaskAttachment,
+} from "@/lib/vazifalar-api";
+
+import { isDirectorRole, normalizeUserRole, userRoleLabel } from "@/lib/roles";
+import { VerifiedName } from "@/components/VerifiedBadge";
+import { useI18n } from "@/i18n/I18nProvider";
+import { TaskFormDialog } from "@/components/vazifalar/TaskFormDialog";
+import { AcceptWindowCountdown } from "@/components/vazifalar/AcceptWindowCountdown";
+import { TaskReturnDialog } from "@/components/vazifalar/TaskReturnDialog";
+import { TasksSidebar, rankActiveStaff } from "@/components/vazifalar/TasksSidebar";
+import {
+  downloadTasksExcel,
+  downloadTasksPdf,
+  type TaskExportColumnId,
+  type TaskExportPayload,
+  type TaskExportRow,
+} from "@/lib/vazifalar-export";
+
+type BoardCol = "past" | "today" | "progress" | "review" | "completed";
+type BoardView = "kanban" | "list" | "calendar";
+
+/** Apteka smena — vazifa qo‘yolmaydi; yurist va barcha ofis xodimlari qo‘ya oladi */
+const TASK_ASSIGN_BLOCKED = new Set(["farmasevt", "stajyor"]);
+
+function canAssignTasks(role?: string | null) {
+  if (!role) return false;
+  return !TASK_ASSIGN_BLOCKED.has(role);
+}
+
+const COLUMNS: {
+  id: BoardCol;
+  labelKey: string;
+  hintKey: string;
+  top: string;
+  headerBg: string;
+  countBg: string;
+  emptyKey: string;
+  allowCreate?: boolean;
+  accentDot: string;
+  icon: React.ComponentType<{ className?: string }>;
+  iconTone: string;
+}[] = [
+  {
+    id: "past",
+    labelKey: "tasks.overdue",
+    hintKey: "tasks.overdueHint",
+    top: "bg-rose-500",
+    headerBg: "bg-rose-50/90 dark:bg-rose-500/10",
+    countBg: "bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-200",
+    emptyKey: "tasks.empty.overdue",
+    allowCreate: true,
+    accentDot: "bg-rose-500",
+    icon: AlertTriangle,
+    iconTone: "bg-rose-500/12 text-rose-600 ring-rose-500/20 dark:text-rose-300",
+  },
+  {
+    id: "today",
+    labelKey: "tasks.today",
+    hintKey: "tasks.todayHint",
+    top: "bg-amber-500",
+    headerBg: "bg-amber-50/90 dark:bg-amber-500/10",
+    countBg: "bg-amber-100 text-amber-900 dark:bg-amber-500/20 dark:text-amber-200",
+    emptyKey: "tasks.empty.today",
+    allowCreate: true,
+    accentDot: "bg-amber-500",
+    icon: CalendarClock,
+    iconTone: "bg-amber-500/12 text-amber-600 ring-amber-500/20 dark:text-amber-300",
+  },
+  {
+    id: "progress",
+    labelKey: "tasks.inProgress",
+    hintKey: "tasks.inProgressHint",
+    top: "bg-sky-500",
+    headerBg: "bg-sky-50/90 dark:bg-sky-500/10",
+    countBg: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
+    emptyKey: "tasks.empty.progress",
+    allowCreate: true,
+    accentDot: "bg-sky-500",
+    icon: PlayCircle,
+    iconTone: "bg-sky-500/12 text-sky-600 ring-sky-500/20 dark:text-sky-300",
+  },
+  {
+    id: "review",
+    labelKey: "tasks.review",
+    hintKey: "tasks.reviewHint",
+    top: "bg-violet-500",
+    headerBg: "bg-violet-50/90 dark:bg-violet-500/10",
+    countBg: "bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-200",
+    emptyKey: "tasks.empty.review",
+    allowCreate: false,
+    accentDot: "bg-violet-500",
+    icon: ShieldCheck,
+    iconTone: "bg-violet-500/12 text-violet-600 ring-violet-500/20 dark:text-violet-300",
+  },
+  {
+    id: "completed",
+    labelKey: "tasks.done",
+    hintKey: "tasks.doneHint",
+    top: "bg-emerald-500",
+    headerBg: "bg-emerald-50/90 dark:bg-emerald-500/10",
+    countBg: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
+    emptyKey: "tasks.empty.done",
+    allowCreate: false,
+    accentDot: "bg-emerald-500",
+    icon: CheckCircle2,
+    iconTone: "bg-emerald-500/12 text-emerald-600 ring-emerald-500/20 dark:text-emerald-300",
+  },
+];
+
+const PRIORITY_CLASS: Record<string, string> = {
+  low: "bg-sky-50 text-sky-700 border-sky-200/80 dark:bg-sky-500/15 dark:text-sky-200 dark:border-sky-500/30",
+  normal: "bg-amber-50 text-amber-800 border-amber-200/80 dark:bg-amber-500/15 dark:text-amber-200 dark:border-amber-500/30",
+  high: "bg-orange-50 text-orange-800 border-orange-200/80 dark:bg-orange-500/15 dark:text-orange-200 dark:border-orange-500/30",
+  urgent: "bg-rose-50 text-rose-800 border-rose-200/80 dark:bg-rose-500/15 dark:text-rose-200 dark:border-rose-500/30",
+};
+
+const surface =
+  "rounded-2xl border border-border/80 bg-card text-card-foreground shadow-sm shadow-black/[0.03] dark:shadow-black/20";
+const control =
+  "h-10 rounded-xl border-border/80 bg-background text-[13px] text-foreground shadow-[0_1px_2px_rgba(15,39,68,0.04)] transition hover:border-[#0b3a5c]/30 dark:hover:border-sky-400/30";
+/** Faol filtr — rangli belgi */
+const controlActive =
+  "border-[#0b3a5c]/50 bg-[#0b3a5c]/[0.06] text-[#0b3a5c] font-semibold ring-1 ring-[#0b3a5c]/15 dark:border-sky-400/50 dark:bg-sky-400/10 dark:text-sky-300 dark:ring-sky-400/20";
+
+type TaskSort = "due" | "priority" | "newest";
+const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+const BOARD_TXT = {
+  uz: {
+    quick: "Tezkor",
+    qToday: "Bugun",
+    qWeek: "Shu hafta",
+    qMonth: "Shu oy",
+    qUrgent: "Shoshilinch",
+    qOverdue: "Kechikkanlar",
+    qReview: "Tekshiruvda",
+    sort: "Saralash",
+    sortDue: "Muddat bo‘yicha",
+    sortPriority: "Ustuvorlik bo‘yicha",
+    sortNewest: "Eng yangilari",
+    found: "ta vazifa",
+    clear: "Tozalash",
+    ofTotal: "umumiydan",
+    completion: "Bajarilish",
+    clickHint: "Bosib filtrlash",
+    activeHint: "Filtr yoqilgan",
+    review: "Tekshiruvda",
+    emptyPast: "Ajoyib! Kechikkan vazifa yo‘q",
+    emptyPastHint: "Barcha muddatlar nazoratda",
+    emptyToday: "Bugunga vazifa yo‘q",
+    emptyTodayHint: "Yangi vazifa qo‘shib, kunni rejalashtiring",
+    emptyProgress: "Jarayonda vazifa yo‘q",
+    emptyProgressHint: "Qabul qilingan vazifalar shu yerda ko‘rinadi",
+    emptyReview: "Tekshiruv navbati bo‘sh",
+    emptyReviewHint: "Bajarilgan vazifalar tasdiqlash uchun shu yerga tushadi",
+    emptyDone: "Hali bajarilgan vazifa yo‘q",
+    emptyDoneHint: "Tasdiqlangan vazifalar shu yerda saqlanadi",
+    addHere: "Vazifa qo‘shish",
+    dateRange: "Muddat oralig‘i",
+  },
+  ru: {
+    quick: "Быстро",
+    qToday: "Сегодня",
+    qWeek: "Эта неделя",
+    qMonth: "Этот месяц",
+    qUrgent: "Срочные",
+    qOverdue: "Просроченные",
+    qReview: "На проверке",
+    sort: "Сортировка",
+    sortDue: "По сроку",
+    sortPriority: "По приоритету",
+    sortNewest: "Сначала новые",
+    found: "задач",
+    clear: "Сбросить",
+    ofTotal: "от общего",
+    completion: "Выполнение",
+    clickHint: "Нажмите для фильтра",
+    activeHint: "Фильтр включён",
+    review: "На проверке",
+    emptyPast: "Отлично! Просроченных нет",
+    emptyPastHint: "Все сроки под контролем",
+    emptyToday: "На сегодня задач нет",
+    emptyTodayHint: "Добавьте задачу и спланируйте день",
+    emptyProgress: "Нет задач в работе",
+    emptyProgressHint: "Принятые задачи появятся здесь",
+    emptyReview: "Очередь проверки пуста",
+    emptyReviewHint: "Выполненные задачи попадут сюда на утверждение",
+    emptyDone: "Пока нет выполненных задач",
+    emptyDoneHint: "Утверждённые задачи хранятся здесь",
+    addHere: "Добавить задачу",
+    dateRange: "Диапазон сроков",
+  },
+};
+
+const COLUMN_EMPTY: Record<BoardCol, { title: keyof typeof BOARD_TXT.uz; hint: keyof typeof BOARD_TXT.uz }> = {
+  past: { title: "emptyPast", hint: "emptyPastHint" },
+  today: { title: "emptyToday", hint: "emptyTodayHint" },
+  progress: { title: "emptyProgress", hint: "emptyProgressHint" },
+  review: { title: "emptyReview", hint: "emptyReviewHint" },
+  completed: { title: "emptyDone", hint: "emptyDoneHint" },
+};
+
+function normFilterText(s: string) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[’‘ʻ`']/g, "'")
+    .replace(/\s+/g, " ");
+}
+
+/** Bo‘lim filtri: department nomi yoki lavozim yorlig‘i (masalan Koordinator) */
+function staffMatchesBranchFilter(
+  o: {
+    kind: string;
+    id: number;
+    departmentName?: string | null;
+    meta?: string | null;
+  },
+  branchFilter: string,
+  assigneeDeptKey: Map<string, string>,
+) {
+  if (!branchFilter || branchFilter === "all") return true;
+  const target = normFilterText(branchFilter);
+  if (!target) return true;
+  const fromMap = normFilterText(assigneeDeptKey.get(`${o.kind}:${o.id}`) || "");
+  const fromOpt = normFilterText(o.departmentName || "");
+  if (fromMap === target || fromOpt === target) return true;
+  const roleMeta = normFilterText(o.meta || "");
+  if (roleMeta && roleMeta === target) return true;
+  return false;
+}
+
+const PRIORITY_KEYS: Record<string, string> = {
+  low: "tasks.priority.low",
+  normal: "tasks.priority.normal",
+  high: "tasks.priority.high",
+  urgent: "tasks.priority.urgent",
+};
+
+function formatFilterDate(ymd: string) {
+  const [y, m, d] = ymd.split("-");
+  if (!y || !m || !d) return ymd;
+  return `${d}.${m}.${y}`;
+}
+
+function toYmdLocal(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseYmdLocal(ymd: string): Date | undefined {
+  if (!ymd) return undefined;
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  return new Date(y, m - 1, d);
+}
+
+/** Brauzer uz-UZ ba'zan "M09" qaytaradi — i18n oy nomlaridan foydalanamiz */
+function monthName(monthIndex0: number, t: (key: string) => string) {
+  const n = Math.min(12, Math.max(1, monthIndex0 + 1));
+  return t(`month.${n}`);
+}
+
+function formatMonthYear(d: Date, t: (key: string) => string) {
+  return `${monthName(d.getMonth(), t)} ${d.getFullYear()}`;
+}
+
+function formatDayMonthYear(d: Date, t: (key: string) => string) {
+  return `${d.getDate()} ${monthName(d.getMonth(), t)} ${d.getFullYear()}`;
+}
+
+function startOfDay(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Qolgan kunlar: <0 kechikkan, 0 bugun */
+function daysUntilDue(dueAt: string | null | undefined, now = new Date()): number | null {
+  if (!dueAt) return null;
+  const due = startOfDay(new Date(dueAt));
+  const today = startOfDay(now);
+  return Math.round((due.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * Muddat rangi: ≤3 kun qizil, ≤7 kun sariq, ≥10 kun yashil.
+ * Yakunlangan (verified) — oddiy kulrang.
+ */
+function dueDateToneClass(
+  dueAt: string | null | undefined,
+  status?: string | null,
+): string {
+  if (status === "verified" || status === "cancelled") {
+    return "text-muted-foreground";
+  }
+  const days = daysUntilDue(dueAt);
+  if (days == null) return "text-muted-foreground";
+  if (days <= 3) return "font-semibold text-rose-600 dark:text-rose-400";
+  if (days <= 7) return "font-semibold text-amber-600 dark:text-amber-400";
+  if (days >= 10) return "font-semibold text-emerald-600 dark:text-emerald-400";
+  return "font-semibold text-lime-600 dark:text-lime-400";
+}
+
+/** Kalendar chip foni — muddat yaqinligiga qarab */
+function dueDateChipClass(
+  dueAt: string | null | undefined,
+  status?: string | null,
+): string {
+  if (status === "verified" || status === "cancelled") {
+    return "bg-muted text-muted-foreground";
+  }
+  const days = daysUntilDue(dueAt);
+  if (days == null) return "bg-primary/10 text-primary";
+  if (days <= 3) return "bg-rose-500/15 font-medium text-rose-700 dark:text-rose-300";
+  if (days <= 7) return "bg-amber-500/15 font-medium text-amber-800 dark:text-amber-300";
+  if (days >= 10) return "bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300";
+  return "bg-lime-500/15 font-medium text-lime-800 dark:text-lime-300";
+}
+
+function dueDateDotClass(
+  dueAt: string | null | undefined,
+  status?: string | null,
+): string {
+  if (status === "verified" || status === "cancelled") return "bg-muted-foreground/50";
+  const days = daysUntilDue(dueAt);
+  if (days == null) return "bg-primary";
+  if (days <= 3) return "bg-rose-500";
+  if (days <= 7) return "bg-amber-500";
+  if (days >= 10) return "bg-emerald-500";
+  return "bg-lime-500";
+}
+
+function addDays(d: Date, n: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+function boardColumnFor(task: Vazifa, now = new Date()): BoardCol {
+  if (task.status === "verified" || task.status === "cancelled") return "completed";
+  if (task.status === "done") return "review";
+
+  // Qabul muddati o‘tgan yoki due kechikkan → Kechikkan
+  if (isTaskOverdue(task, now)) return "past";
+
+  const dueAt = task.dueAt || task.createdAt;
+  if (dueAt) {
+  const due = startOfDay(new Date(dueAt));
+  const today = startOfDay(now);
+  if (due.getTime() === today.getTime()) return "today";
+  }
+  return "progress";
+}
+
+function initialsFromName(name: string | null | undefined) {
+  return String(name || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() || "")
+    .join("");
+}
+
+function checklistProgress(task: Vazifa) {
+  const list = task.meta?.checklist;
+  if (!Array.isArray(list) || list.length === 0) {
+    if (task.status === "todo") return 10;
+    if (task.status === "in_progress") return 55;
+    if (task.status === "done") return 90;
+    if (task.status === "verified") return 100;
+    return 0;
+  }
+  const done = list.filter((c) => c.done).length;
+  return Math.round((done / list.length) * 100);
+}
+
+function taskTypeLabel(type: string | undefined, t: (k: string) => string) {
+  if (!type) return "";
+  const aliases: Record<string, string> = {
+    hisobot: "tasks.form.type.report",
+    report: "tasks.form.type.report",
+    tekshiruv: "tasks.form.type.audit",
+    audit: "tasks.form.type.audit",
+    suhbat: "tasks.form.type.call",
+    call: "tasks.form.type.call",
+    hujjat: "tasks.form.type.doc",
+    doc: "tasks.form.type.doc",
+    boshqa: "tasks.form.type.other",
+    other: "tasks.form.type.other",
+  };
+  const key = aliases[type] || `tasks.form.type.${type}`;
+  const labeled = t(key);
+  return labeled === key ? type : labeled;
+}
+
+function looksLikeGpsOrCoords(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return true;
+  if (/\|gps:/i.test(s)) return false; // has name + gps suffix — name can be stripped
+  if (/\d+\s*°/.test(s)) return true;
+  if (/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(s)) return true;
+  return false;
+}
+
+function cleanPlaceLabel(raw: string | null | undefined) {
+  const name = displayBranchName(raw);
+  if (!name || looksLikeGpsOrCoords(name)) return "";
+  if (/^(filial|lokatsiya|location)$/i.test(name)) return "";
+  return name;
+}
+
+function toDatetimeLocalValue(iso: string | null) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatDate(iso: string | null) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export default function VazifalarPage() {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const { t, locale } = useI18n();
+  const isMobile = useIsMobile();
+  const [location] = useLocation();
+  const deepLinkParams = useMemo(() => {
+    const qs = typeof window !== "undefined" ? window.location.search : "";
+    return new URLSearchParams(qs.startsWith("?") ? qs.slice(1) : qs);
+  }, [location]);
+  const deepTaskId = deepLinkParams.get("task");
+  const deepQ = deepLinkParams.get("q");
+  const deepAssigneeKind = deepLinkParams.get("assigneeKind");
+  const deepAssigneeId = deepLinkParams.get("assigneeId");
+  const canAssign = canAssignTasks(user?.role);
+  const canBrowseAll = canBrowseAllTasks(user?.role);
+  const canSeePrivate = canSeePrivateTasks(user?.role);
+  const isAuditViewer = isTaskAuditViewer(user?.role);
+  const opensOnFullBoard =
+    isDirectorRole(user?.role) || normalizeUserRole(user?.role) === "hr_direktor";
+
+  const [search, setSearch] = useState(deepQ || "");
+  const [viewMode, setViewMode] = useState<BoardView>(() => {
+    const v = deepLinkParams.get("view");
+    if (v === "list" || v === "calendar" || v === "kanban") return v;
+    // Mobil ham desktop kabi kanban (bo‘limlar) bilan ochilsin
+    return "kanban";
+  });
+  const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [branchFilter, setBranchFilter] = useState<string>("all");
+  /** all | ofis | dorixona — ijrochi turi */
+  const [workplaceFilter, setWorkplaceFilter] = useState<"all" | "ofis" | "dorixona">("all");
+  /** Holat: kechikkan / bugun / jarayon / tekshiruv / bajarilgan */
+  const [statusColFilter, setStatusColFilter] = useState<"all" | BoardCol>("all");
+  const [sortMode, setSortMode] = useState<TaskSort>(() => {
+    try {
+      const v = localStorage.getItem("vazifalar.sort");
+      if (v === "priority" || v === "newest") return v;
+    } catch {
+      /* ignore */
+    }
+    return "due";
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("vazifalar.sort", sortMode);
+    } catch {
+      /* ignore */
+    }
+  }, [sortMode]);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [dateFromOpen, setDateFromOpen] = useState(false);
+  const [dateToOpen, setDateToOpen] = useState(false);
+  const [calMonth, setCalMonth] = useState(() => {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), 1);
+  });
+  const [calScope, setCalScope] = useState<"month" | "year">("month");
+  const [selectedCalDay, setSelectedCalDay] = useState(() => startOfDay(new Date()));
+  /** null = O‘zim; "all" = barcha; object = tanlangan xodim */
+  const [assigneeFilter, setAssigneeFilter] = useState<
+    null | "all" | { kind: "user" | "employee"; id: number; name: string }
+  >(null);
+
+  const needsAllBoard = !!(
+    deepTaskId ||
+    deepAssigneeKind ||
+    assigneeFilter === "all" ||
+    (assigneeFilter && assigneeFilter !== null)
+  );
+  const { data: tasks = [], isLoading } = useGetTasks({
+    board: needsAllBoard ? "all" : "active",
+  });
+  const { data: users = [] } = useGetUsers({ status: "active" } as any);
+  const { data: employees = [] } = useGetEmployees(undefined as any);
+  const { data: departments = [] } = useGetDepartments();
+
+  const createTask = useCreateTask();
+  const updateTask = useUpdateTask();
+  const deleteTask = useDeleteTask();
+  const completeTask = useCompleteTask();
+  const acceptTask = useAcceptTask();
+  const requestExtension = useRequestExtension();
+  const resolveExtension = useResolveExtension();
+  const verifyTask = useVerifyTask();
+  const sendTaskMessage = useSendTaskMessage();
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [completeOpen, setCompleteOpen] = useState(false);
+  const [extendOpen, setExtendOpen] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewDialogMode, setViewDialogMode] = useState<"work" | "view">("work");
+  const [editing, setEditing] = useState<Vazifa | null>(null);
+  const [activeTask, setActiveTask] = useState<Vazifa | null>(null);
+  const [createDueAt, setCreateDueAt] = useState<string | null>(null);
+  const deepLinkHandled = useRef<string | null>(null);
+  const fullBoardOpened = useRef(false);
+
+  const [completionNote, setCompletionNote] = useState("");
+  const [completionFiles, setCompletionFiles] = useState<TaskAttachment[]>([]);
+  const [completeUploading, setCompleteUploading] = useState(false);
+  const completeFileRef = useRef<HTMLInputElement>(null);
+
+  const [extendDue, setExtendDue] = useState("");
+  const [extendNote, setExtendNote] = useState("");
+  const [extendPresetDays, setExtendPresetDays] = useState<number | null>(1);
+  const [returnTask, setReturnTask] = useState<Vazifa | null>(null);
+
+  useEffect(() => {
+    if (deepQ && !deepAssigneeKind) setSearch(deepQ);
+  }, [deepQ, deepAssigneeKind]);
+
+  useEffect(() => {
+    if (fullBoardOpened.current || !opensOnFullBoard) return;
+    fullBoardOpened.current = true;
+    setAssigneeFilter("all");
+  }, [opensOnFullBoard]);
+
+  useEffect(() => {
+    if (!deepTaskId || !tasks.length) return;
+    if (deepLinkHandled.current === deepTaskId) return;
+    const found = tasks.find((t) => String(t.id) === deepTaskId);
+    if (!found) return;
+    deepLinkHandled.current = deepTaskId;
+    setActiveTask(found);
+    setViewOpen(true);
+  }, [deepTaskId, tasks]);
+
+  const assigneeOptions = useMemo(() => {
+    const normName = (s: string) =>
+      String(s || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+
+    const activeUserStatuses = new Set(["active", "on_leave"]);
+    const activeEmpStatuses = new Set(["working", "new", "on_leave"]);
+
+    const selfId = user?.id != null ? Number(user.id) : null;
+    const activeUsers = (users as any[]).filter(
+      (x) =>
+        activeUserStatuses.has(String(x.status || "")) &&
+        String(x.role || "") !== "admin" &&
+        (selfId == null || Number(x.id) !== selfId),
+    );
+    const linkedUserIds = new Set<number>(
+      activeUsers.map((x) => Number(x.id)).filter((id) => Number.isFinite(id)),
+    );
+    const linkedNames = new Set(
+      activeUsers.map((x) => normName(x.fullName)).filter(Boolean),
+    );
+
+    const u = activeUsers.map((x) => {
+      const roleMeta = userRoleLabel(x.role) || String(x.role || "").replace(/_/g, " ");
+      const deptName = String(x.departmentName || "").trim();
+      const workplace = staffWorkplaceOf({
+        role: x.role,
+        orgRole: x.orgRole,
+        position: x.position,
+        departmentName: deptName,
+      });
+      return {
+        key: `user:${x.id}`,
+        name: String(x.fullName || "").trim(),
+        label: deptName ? `${x.fullName} · ${roleMeta} · ${deptName}` : `${x.fullName} · ${roleMeta}`,
+        kind: "user" as const,
+        id: x.id as number,
+        role: x.role ? String(x.role) : undefined,
+        userId: x.id as number,
+        meta: roleMeta,
+        departmentId: x.departmentId != null ? Number(x.departmentId) : null,
+        departmentName: deptName || null,
+        workplace,
+      };
+    });
+
+    const e = (employees as any[])
+      .filter((x) => activeEmpStatuses.has(String(x.employmentStatus || "working")))
+      .filter((x) => {
+        const uid = x.userId != null ? Number(x.userId) : null;
+        if (selfId != null && uid === selfId) return false;
+        if (uid != null && linkedUserIds.has(uid)) return false;
+        const name = normName(x.fullName);
+        if (name && linkedNames.has(name)) return false;
+        return true;
+      })
+      .map((x) => {
+        const deptName = String(x.departmentName || "").trim();
+        const place = cleanPlaceLabel(x.location);
+        const metaParts = [x.position, deptName || place].filter(Boolean);
+        const workplace = staffWorkplaceOf({
+          role: x.userRole,
+          orgRole: x.orgRole,
+          position: x.position,
+          departmentName: deptName,
+        });
+        return {
+      key: `employee:${x.id}`,
+          name: String(x.fullName || "").trim(),
+          label: `${x.fullName}${metaParts.length ? ` · ${metaParts.join(" · ")}` : ""}`,
+      kind: "employee" as const,
+      id: x.id as number,
+          role: x.userRole ? String(x.userRole) : undefined,
+          userId: x.userId != null ? Number(x.userId) : undefined,
+          meta: metaParts.join(" · "),
+          departmentId: x.departmentId != null ? Number(x.departmentId) : null,
+          departmentName: deptName || null,
+          workplace,
+        };
+      });
+
+    return [...u, ...e].filter((o) => o.name);
+  }, [users, employees, user?.id]);
+
+  useEffect(() => {
+    if (!deepAssigneeKind || !deepAssigneeId) return;
+    if (deepAssigneeKind !== "user" && deepAssigneeKind !== "employee") return;
+    const id = Number(deepAssigneeId);
+    if (!Number.isFinite(id)) return;
+    const opt = assigneeOptions.find((o) => o.kind === deepAssigneeKind && o.id === id);
+    if (opt) {
+      setAssigneeFilter({ kind: opt.kind, id: opt.id, name: opt.name });
+      setSearch(opt.name);
+      return;
+    }
+    setAssigneeFilter((prev) =>
+      prev && prev.kind === deepAssigneeKind && prev.id === id
+        ? prev
+        : { kind: deepAssigneeKind, id, name: deepQ || prev?.name || `#${id}` },
+    );
+  }, [deepAssigneeKind, deepAssigneeId, deepQ, assigneeOptions]);
+
+  const departmentOptions = useMemo(() => {
+    const list = (departments as any[])
+      .map((d) => ({
+        id: Number(d.id),
+        name: String(d.name || "").trim(),
+      }))
+      .filter((d) => d.name && Number.isFinite(d.id));
+    return list.sort((a, b) => a.name.localeCompare(b.name, "uz"));
+  }, [departments]);
+
+  const deptNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const d of departmentOptions) m.set(d.id, d.name);
+    return m;
+  }, [departmentOptions]);
+
+  /** Filtr: API bo‘limlari + xodim/userlardagi barcha noyob bo‘lim nomlari */
+  const branchOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of departmentOptions) {
+      if (d.name) set.add(d.name);
+    }
+    for (const o of assigneeOptions) {
+      const n = String(o.departmentName || "").trim();
+      if (n) set.add(n);
+    }
+    for (const u of users as any[]) {
+      const n = String(u.departmentName || "").trim();
+      if (n) set.add(n);
+    }
+    for (const e of employees as any[]) {
+      const n =
+        String(e.departmentName || "").trim() ||
+        (e.departmentId != null ? deptNameById.get(Number(e.departmentId)) || "" : "");
+      if (n) set.add(n);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "uz"));
+  }, [departmentOptions, assigneeOptions, users, employees, deptNameById]);
+
+  const [deptPickerOpen, setDeptPickerOpen] = useState(false);
+  const [deptPickerQ, setDeptPickerQ] = useState("");
+  const [staffPickerOpen, setStaffPickerOpen] = useState(false);
+  const [staffPickerQ, setStaffPickerQ] = useState("");
+
+  const filteredBranchOptions = useMemo(() => {
+    const q = deptPickerQ.trim().toLowerCase();
+    if (!q) return branchOptions;
+    return branchOptions.filter((b) => scriptIncludes(b, q));
+  }, [branchOptions, deptPickerQ]);
+
+  const assigneeDeptKey = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of assigneeOptions as Array<{
+      kind: string;
+      id: number;
+      departmentId?: number | null;
+      departmentName?: string | null;
+    }>) {
+      const byId = o.departmentId != null ? deptNameById.get(o.departmentId) : null;
+      const name = (byId || o.departmentName || "").trim();
+      if (name) m.set(`${o.kind}:${o.id}`, name);
+    }
+    for (const e of employees as any[]) {
+      const name = String(e.departmentName || "").trim() || deptNameById.get(Number(e.departmentId)) || "";
+      if (name && e.id != null) m.set(`employee:${e.id}`, name);
+      if (name && e.userId != null) m.set(`user:${e.userId}`, name);
+    }
+    for (const u of users as any[]) {
+      const name = String(u.departmentName || "").trim() || deptNameById.get(Number(u.departmentId)) || "";
+      if (name && u.id != null) m.set(`user:${u.id}`, name);
+    }
+    return m;
+  }, [assigneeOptions, employees, users, deptNameById]);
+
+  const assigneeWorkplaceKey = useMemo(() => {
+    const m = new Map<string, "ofis" | "dorixona">();
+    for (const o of assigneeOptions) {
+      m.set(`${o.kind}:${o.id}`, o.workplace);
+    }
+    return m;
+  }, [assigneeOptions]);
+
+  const assigneeSelectOptions = useMemo(() => {
+    let list = assigneeOptions;
+    if (workplaceFilter !== "all") {
+      list = list.filter((o) => o.workplace === workplaceFilter);
+    }
+    if (branchFilter !== "all") {
+      list = list.filter((o) =>
+        staffMatchesBranchFilter(o, branchFilter, assigneeDeptKey),
+      );
+    }
+    return list;
+  }, [assigneeOptions, workplaceFilter, branchFilter, assigneeDeptKey]);
+
+  const filteredStaffPickerOptions = useMemo(() => {
+    const q = staffPickerQ.trim().toLowerCase();
+    if (!q) return assigneeSelectOptions;
+    return assigneeSelectOptions.filter((o) =>
+      scriptIncludes([o.name, o.label, o.meta].filter(Boolean).join(" "), q),
+    );
+  }, [assigneeSelectOptions, staffPickerQ]);
+
+  const staffFilterLabel = useMemo(() => {
+    if (assigneeFilter === null) return t("tasks.filter.me");
+    if (assigneeFilter === "all") return t("tasks.filter.allStaff");
+    return assigneeFilter.name;
+  }, [assigneeFilter, t]);
+
+  /** Bo‘lim/ofis o‘zgaganda tanlangan xodim mos kelmasa — qaytarish */
+  useEffect(() => {
+    if (assigneeFilter === null || assigneeFilter === "all") return;
+    const opt = assigneeOptions.find(
+      (o) => o.kind === assigneeFilter.kind && o.id === assigneeFilter.id,
+    );
+    if (!opt) {
+      setAssigneeFilter(canBrowseAll ? "all" : null);
+      setSearch("");
+      return;
+    }
+    if (workplaceFilter !== "all" && opt.workplace !== workplaceFilter) {
+      setAssigneeFilter(canBrowseAll ? "all" : null);
+      setSearch("");
+      return;
+    }
+    if (
+      branchFilter !== "all" &&
+      !staffMatchesBranchFilter(opt, branchFilter, assigneeDeptKey)
+    ) {
+      setAssigneeFilter(canBrowseAll ? "all" : null);
+      setSearch("");
+    }
+  }, [
+    branchFilter,
+    workplaceFilter,
+    assigneeFilter,
+    assigneeOptions,
+    assigneeDeptKey,
+    canBrowseAll,
+  ]);
+
+  const isCreatorOf = (t: Vazifa) => !!user && t.createdById === user.id;
+  const isAssigneeOf = (t: Vazifa) =>
+    !!user && t.assigneeKind === "user" && t.assigneeId === user.id;
+
+  const assignerOf = (t: Vazifa | null) => {
+    if (!t) return { name: null as string | null, role: null as string | null };
+    const u = (users as any[]).find((x) => Number(x?.id) === Number(t.createdById));
+    return {
+      name: (u?.fullName as string) || t.createdByName || null,
+      role: (u?.role as string) || null,
+    };
+  };
+
+  const filteredBundle = useMemo(() => {
+    let list = tasks.filter(
+      (t) =>
+        t.status !== "cancelled" &&
+        t.candidateId == null &&
+        !t.pipelineStage,
+    );
+    // Maxfiy — faqat admin (yoki o‘zi beruvchi/ijrochi) ko‘radi
+    if (!canSeePrivate) {
+      list = list.filter((t) => {
+        const vis = (t.meta as { visibility?: string } | null | undefined)?.visibility;
+        if (vis !== "private") return true;
+        if (!user?.id) return false;
+        return (
+          t.createdById === user.id ||
+          (t.assigneeKind === "user" && t.assigneeId === user.id)
+        );
+      });
+    }
+    if (assigneeFilter === null) {
+      // O‘zim — menga kelgan + men qo‘ygan (boshqalarga ham)
+      if (user?.id) {
+        list = list.filter(
+          (t) =>
+            (t.assigneeKind === "user" && t.assigneeId === user.id) ||
+            t.createdById === user.id,
+        );
+      } else {
+        list = [];
+      }
+    const q = search.trim().toLowerCase();
+      if (q && q !== (user?.fullName || "").toLowerCase()) {
+        list = list.filter((t) =>
+          scriptIncludes([t.title, t.description, t.assigneeName, String(t.id)].filter(Boolean).join(" "), q),
+        );
+      }
+    } else if (assigneeFilter !== "all") {
+      list = list.filter(
+        (t) =>
+          t.assigneeKind === assigneeFilter.kind && t.assigneeId === assigneeFilter.id,
+      );
+      const q = search.trim().toLowerCase();
+      if (q && q !== assigneeFilter.name.toLowerCase()) {
+        list = list.filter((t) =>
+          scriptIncludes([t.title, t.description, t.assigneeName, String(t.id)].filter(Boolean).join(" "), q),
+        );
+      }
+    } else {
+      const q = search.trim().toLowerCase();
+      if (q) {
+        list = list.filter(
+      (t) =>
+        scriptIncludes([t.title, t.assigneeName, t.description, String(t.id)].filter(Boolean).join(" "), q),
+        );
+      }
+    }
+    if (priorityFilter !== "all") {
+      list = list.filter((t) => t.priority === priorityFilter);
+    }
+    if (branchFilter !== "all") {
+      const target = normFilterText(branchFilter);
+      list = list.filter((t) => {
+        const metaDept = normFilterText(cleanPlaceLabel(t.meta?.branchOrDept));
+        if (metaDept && metaDept === target) return true;
+        const key = `${t.assigneeKind}:${t.assigneeId}`;
+        const fromAssignee = normFilterText(assigneeDeptKey.get(key) || "");
+        if (fromAssignee === target) return true;
+        const opt = assigneeOptions.find(
+          (o) => o.kind === t.assigneeKind && o.id === t.assigneeId,
+        );
+        if (opt && staffMatchesBranchFilter(opt, branchFilter, assigneeDeptKey)) {
+          return true;
+        }
+        return false;
+      });
+    }
+    if (workplaceFilter !== "all") {
+      list = list.filter((t) => {
+        const key = `${t.assigneeKind}:${t.assigneeId}`;
+        const place = assigneeWorkplaceKey.get(key);
+        if (place) return place === workplaceFilter;
+        // Meta / joylashuvdan taxmin
+        const meta = cleanPlaceLabel(t.meta?.branchOrDept).toLowerCase();
+        if (workplaceFilter === "dorixona") {
+          return /(dorixona|apteka|filial|farmasevt|mudir)/i.test(meta);
+        }
+        return !meta || !/(dorixona|apteka)/i.test(meta);
+      });
+    }
+    if (dateFrom) {
+      const from = startOfDay(new Date(dateFrom)).getTime();
+      list = list.filter((t) => {
+        const due = t.dueAt || t.createdAt;
+        return due ? new Date(due).getTime() >= from : true;
+      });
+    }
+    if (dateTo) {
+      const to = addDays(startOfDay(new Date(dateTo)), 1).getTime();
+      list = list.filter((t) => {
+        const due = t.dueAt || t.createdAt;
+        return due ? new Date(due).getTime() < to : true;
+      });
+    }
+
+    const statusCounts: Record<BoardCol, number> = {
+      past: 0,
+      today: 0,
+      progress: 0,
+      review: 0,
+      completed: 0,
+    };
+    for (const t of list) {
+      statusCounts[boardColumnFor(t)] += 1;
+    }
+
+    if (statusColFilter !== "all") {
+      list = list.filter((t) => boardColumnFor(t) === statusColFilter);
+    }
+
+    return { list, statusCounts };
+  }, [
+    tasks,
+    search,
+    assigneeFilter,
+    priorityFilter,
+    branchFilter,
+    workplaceFilter,
+    dateFrom,
+    dateTo,
+    statusColFilter,
+    assigneeDeptKey,
+    assigneeWorkplaceKey,
+    assigneeOptions,
+    user?.id,
+    user?.fullName,
+    canSeePrivate,
+  ]);
+
+  const filtered = filteredBundle.list;
+  const statusCounts = filteredBundle.statusCounts;
+
+  function clearSearchFilter() {
+    setSearch("");
+    setAssigneeFilter(null);
+  }
+
+  function clearAllFilters() {
+    setBranchFilter("all");
+    setWorkplaceFilter("all");
+    setPriorityFilter("all");
+    setStatusColFilter("all");
+    setDateFrom("");
+    setDateTo("");
+    clearSearchFilter();
+  }
+
+  function resetStaffFilterToMe() {
+    setAssigneeFilter(null);
+    setSearch("");
+  }
+
+  const byColumn = useMemo(() => {
+    const map: Record<BoardCol, Vazifa[]> = {
+      past: [],
+      today: [],
+      progress: [],
+      review: [],
+      completed: [],
+    };
+    for (const t of filtered) {
+      map[boardColumnFor(t)].push(t);
+    }
+    for (const k of Object.keys(map) as BoardCol[]) {
+      map[k].sort((a, b) => {
+        if (sortMode === "newest") {
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        }
+        if (sortMode === "priority") {
+          const pa = PRIORITY_RANK[a.priority] ?? 2;
+          const pb = PRIORITY_RANK[b.priority] ?? 2;
+          if (pa !== pb) return pa - pb;
+        }
+        if (k === "completed" || k === "review") {
+          const ca = a.completedAt ? new Date(a.completedAt).getTime() : 0;
+          const cb = b.completedAt ? new Date(b.completedAt).getTime() : 0;
+          return cb - ca;
+        }
+        const da = a.dueAt ? new Date(a.dueAt).getTime() : Infinity;
+        const db = b.dueAt ? new Date(b.dueAt).getTime() : Infinity;
+        return da - db;
+      });
+    }
+    return map;
+  }, [filtered, sortMode]);
+
+  const kpi = useMemo(() => {
+    const total =
+      statusCounts.past +
+      statusCounts.today +
+      statusCounts.progress +
+      statusCounts.review +
+      statusCounts.completed;
+    return {
+      total,
+      overdue: statusCounts.past,
+      today: statusCounts.today,
+      progress: statusCounts.progress,
+      review: statusCounts.review,
+      done: statusCounts.completed,
+      doneRate: total ? Math.round((statusCounts.completed / total) * 100) : 0,
+    };
+  }, [statusCounts]);
+
+  const [mobileCol, setMobileCol] = useState<BoardCol>("today");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [selectCol, setSelectCol] = useState<BoardCol | null>(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const mobileColTouched = useRef(false);
+
+  useEffect(() => {
+    if (mobileColTouched.current) return;
+    const order: BoardCol[] = ["past", "today", "progress", "review", "completed"];
+    const first = order.find((id) => byColumn[id].length > 0);
+    if (first) setMobileCol(first);
+  }, [byColumn]);
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (branchFilter !== "all") n += 1;
+    if (workplaceFilter !== "all") n += 1;
+    if (assigneeFilter !== null) n += 1;
+    if (priorityFilter !== "all") n += 1;
+    if (dateFrom) n += 1;
+    if (dateTo) n += 1;
+    if (search.trim() && assigneeFilter === null) n += 1;
+    if (statusColFilter !== "all") n += 1;
+    return n;
+  }, [
+    branchFilter,
+    workplaceFilter,
+    assigneeFilter,
+    priorityFilter,
+    dateFrom,
+    dateTo,
+    search,
+    statusColFilter,
+  ]);
+
+  const staffFilterActive =
+    assigneeFilter !== null && assigneeFilter !== "all";
+  const staffFilterIsAll = assigneeFilter === "all";
+  const workplaceActive = workplaceFilter !== "all";
+  const branchActive = branchFilter !== "all";
+  const priorityActive = priorityFilter !== "all";
+
+  const topAssignees = useMemo(() => rankActiveStaff(filtered, "all").slice(0, 5), [filtered]);
+
+  const todaySchedule = useMemo(() => {
+    return [...byColumn.today, ...byColumn.past.filter((t) => {
+      if (!t.dueAt) return false;
+      return startOfDay(new Date(t.dueAt)).getTime() === startOfDay(new Date()).getTime();
+    })]
+      .slice(0, 6)
+      .sort((a, b) => {
+        const da = a.dueAt ? new Date(a.dueAt).getTime() : 0;
+        const db = b.dueAt ? new Date(b.dueAt).getTime() : 0;
+        return da - db;
+      });
+  }, [byColumn.today, byColumn.past]);
+
+  function openCreate(presetCol?: BoardCol) {
+    setEditing(null);
+    const base = startOfDay(new Date());
+    let target = base;
+    if (presetCol === "past") target = addDays(base, -1);
+    if (presetCol === "progress") target = addDays(base, 2);
+    target.setHours(18, 0, 0, 0);
+    setCreateDueAt(target.toISOString());
+    setEditOpen(true);
+  }
+
+  function formatExportDate(iso: string | null | undefined) {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString("uz-UZ", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return iso;
+    }
+  }
+
+  function statusLabelUz(status: Vazifa["status"]) {
+    switch (status) {
+      case "todo":
+        return "Rejalashtirilgan";
+      case "in_progress":
+        return "Jarayonda";
+      case "done":
+        return "Tekshiruvda";
+      case "verified":
+        return "Tasdiqlangan";
+      case "cancelled":
+        return "Bekor";
+      default:
+        return status;
+    }
+  }
+
+  function buildExportPayload(): TaskExportPayload {
+    const stamp = new Date().toISOString().slice(0, 10);
+    const colLabels: Record<BoardCol, string> = {
+      past: t("tasks.overdue"),
+      today: t("tasks.today"),
+      progress: t("tasks.inProgress"),
+      review: t("tasks.review"),
+      completed: t("tasks.done"),
+    };
+    const colColors: Record<BoardCol, string> = {
+      past: "#f43f5e",
+      today: "#f59e0b",
+      progress: "#0ea5e9",
+      review: "#8b5cf6",
+      completed: "#10b981",
+    };
+
+    const rows: TaskExportRow[] = filtered.map((task) => {
+      const col = boardColumnFor(task);
+      return {
+        id: task.id,
+        title: task.title || "—",
+        description: htmlDescToPlain(task.description || ""),
+        column: colLabels[col],
+        columnId: col as TaskExportColumnId,
+        status: statusLabelUz(task.status),
+        statusRaw: task.status,
+        priority: t(PRIORITY_KEYS[task.priority] || PRIORITY_KEYS.normal!),
+        priorityRaw: task.priority,
+        taskType: taskTypeLabel(task.meta?.taskType, t),
+        assignee: task.assigneeName || "—",
+        createdBy: task.createdByName || "—",
+        dueAt: formatExportDate(task.dueAt),
+        completedAt: formatExportDate(task.completedAt),
+        result: (task.completionNote || "").trim(),
+        branchOrDept: cleanPlaceLabel(task.meta?.branchOrDept) || "—",
+        acceptedAt: formatExportDate(task.acceptedAt),
+      };
+    });
+
+    return {
+      title: "Topshiriqlar hisoboti",
+      generatedAt: new Date().toISOString(),
+      stamp,
+      kpi: {
+        total: kpi.total,
+        overdue: kpi.overdue,
+        today: kpi.today,
+        progress: kpi.progress,
+        done: kpi.done,
+      },
+      columns: (Object.keys(colLabels) as BoardCol[]).map((id) => ({
+        id: id as TaskExportColumnId,
+        label: colLabels[id],
+        count: byColumn[id].length,
+        color: colColors[id],
+      })),
+      topPeople: topAssignees.map((p) => ({ name: p.name, count: p.score })),
+      rows,
+    };
+  }
+
+  async function exportExcel() {
+    try {
+      toast({ title: "Excel tayyorlanmoqda…" });
+      await downloadTasksExcel(buildExportPayload());
+      toast({ title: t("tasks.exportDone"), description: t("tasks.exportExcelHint") });
+    } catch (e: unknown) {
+      toast({
+        title: e instanceof Error ? e.message : "Excel eksport xatosi",
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function exportPdf() {
+    try {
+      toast({ title: "PDF hisobot tayyorlanmoqda…" });
+      await downloadTasksPdf(buildExportPayload());
+      toast({ title: t("tasks.exportDone"), description: t("tasks.exportPdfHint") });
+    } catch (e: unknown) {
+      toast({
+        title: e instanceof Error ? e.message : "PDF eksport xatosi",
+        variant: "destructive",
+      });
+    }
+  }
+
+  function openEdit(task: Vazifa) {
+    const canManage = canManageTaskUi(task, user?.id, user?.role);
+    const assignee = isAssigneeOf(task);
+    // Ijrochi (tahrirlash huquqi yo‘q) — work; auditor / boshqa kuzatuvchi — faqat ko‘rish
+    if (assignee && !canManage) {
+      setActiveTask(task);
+      setViewDialogMode("work");
+      setViewOpen(true);
+      return;
+    }
+    if (!canManage) {
+      setActiveTask(task);
+      setViewDialogMode(isAuditViewer || !assignee ? "view" : "work");
+      setViewOpen(true);
+      return;
+    }
+    setEditing(task);
+    setCreateDueAt(null);
+    setEditOpen(true);
+  }
+
+  function openComplete(task: Vazifa) {
+    if (isTaskOverdue(task)) {
+      toast({
+        title: "Vaqt tugagan",
+        description: "Faqat beruvchi muddatni uzaytirishi mumkin.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setActiveTask(task);
+    setViewDialogMode("work");
+    setViewOpen(true);
+  }
+
+  function openExtend(task: Vazifa) {
+    if (isAssigneeOf(task) && isTaskOverdue(task) && !canManageTaskUi(task, user?.id, user?.role)) {
+      toast({
+        title: "Vaqt tugagan",
+        description: "Faqat beruvchi muddatni uzaytirishi mumkin.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setActiveTask(task);
+    const base = task.dueAt ? new Date(task.dueAt) : new Date();
+    base.setDate(base.getDate() + 1);
+    setExtendDue(toDatetimeLocalValue(base.toISOString()));
+    setExtendNote("");
+    setExtendPresetDays(1);
+    setExtendOpen(true);
+  }
+
+  function applyExtendPreset(days: number) {
+    const base = activeTask?.dueAt ? new Date(activeTask.dueAt) : new Date();
+    if (Number.isNaN(base.getTime())) return;
+    base.setDate(base.getDate() + days);
+    setExtendDue(toDatetimeLocalValue(base.toISOString()));
+    setExtendPresetDays(days);
+  }
+
+  async function onPickFiles(
+    files: FileList | null,
+    setter: React.Dispatch<React.SetStateAction<TaskAttachment[]>>,
+    setUploading: React.Dispatch<React.SetStateAction<boolean>>,
+  ) {
+    if (!files?.length) return;
+    const picked = Array.from(files);
+    setUploading(true);
+    try {
+      const converted: TaskAttachment[] = [];
+      for (const file of picked) {
+        converted.push(await fileToAttachment(file));
+      }
+      setter((prev) => {
+        const next = [...prev];
+        for (const att of converted) {
+          if (next.length >= 8) break;
+          next.push(att);
+        }
+        return next;
+      });
+      toast({
+        title: "Fayl yuklandi",
+        description: `${picked.length} ta fayl qo‘shildi`,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Fayl qo'shilmadi",
+        description: e?.message || "Xato",
+        variant: "destructive",
+      });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleSave(payload: import("@/lib/vazifalar-api").VazifaInput) {
+    try {
+      if (editing) {
+        await updateTask.mutateAsync({ id: editing.id, data: payload });
+        toast({ title: "Vazifa yangilandi" });
+      } else {
+        const created = await createTask.mutateAsync(payload);
+        const n =
+          (created as any)?.created ||
+          payload.assignees?.length ||
+          1;
+        toast({
+          title:
+            n > 1
+              ? `${n} ${t("tasks.batch.created")}`
+              : "Vazifa yaratildi",
+        });
+      }
+      setEditOpen(false);
+    } catch (e: any) {
+      toast({
+        title: "Saqlanmadi",
+        description: e?.message || "Xato",
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function handlePersistChat(patch: {
+    meta: import("@/lib/vazifalar-api").TaskMeta;
+    attachments: import("@/lib/vazifalar-api").TaskAttachment[];
+  }) {
+    if (!editing) return;
+    const updated = await updateTask.mutateAsync({
+      id: editing.id,
+      data: {
+        meta: patch.meta,
+        attachments: patch.attachments,
+      },
+    });
+    setEditing(updated);
+  }
+
+  async function handleComplete() {
+    if (!activeTask) return;
+    if (!completionNote.trim() && completionFiles.length === 0) {
+      toast({
+        title: "Natija qo'shing",
+        description: "Matn, rasm yoki fayl majburiy",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      await completeTask.mutateAsync({
+        id: activeTask.id,
+        completionNote: completionNote.trim() || null,
+        completionAttachments: completionFiles,
+      });
+      toast({ title: "Bajarildi — belgilovchiga yuborildi" });
+      setCompleteOpen(false);
+    } catch (e: any) {
+      toast({
+        title: "Yuborilmadi",
+        description: e?.message,
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function handleExtend() {
+    if (!activeTask || !extendDue) return;
+    try {
+      await requestExtension.mutateAsync({
+        id: activeTask.id,
+        dueAt: new Date(extendDue).toISOString(),
+        note: extendNote.trim() || undefined,
+      });
+      toast({ title: "Muddat so'rovi yuborildi" });
+      setExtendOpen(false);
+    } catch (e: any) {
+      toast({
+        title: "So'rov yuborilmadi",
+        description: e?.message,
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function handleAccept(task: Vazifa) {
+    if (isTaskOverdue(task)) {
+      toast({
+        title: "Vaqt tugagan",
+        description: "Faqat beruvchi muddatni uzaytirishi mumkin.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      await acceptTask.mutateAsync(task.id);
+      toast({ title: "Vazifa qabul qilindi" });
+    } catch (e: any) {
+      toast({
+        title: "Qabul qilinmadi",
+        description: e?.message,
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function handleVerify(
+    task: Vazifa,
+    action: "approve" | "rework",
+    extra?: Partial<TaskReturnPayload>,
+  ) {
+    if (!canApproveTaskUi(task, user?.id, user?.role)) {
+      toast({
+        title: "Ruxsat yo‘q",
+        description: "Faqat vazifa qo‘ygan odam (yoki admin) tasdiqlay oladi",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (action === "approve") {
+      if (!window.confirm(`«${task.title}» — bajarilganini tasdiqlaysizmi?`)) {
+        return;
+      }
+    }
+    try {
+      await verifyTask.mutateAsync({
+        id: task.id,
+        action,
+        note: extra?.note?.trim() || undefined,
+        keepDue: action === "rework" ? extra?.keepDue !== false : undefined,
+        dueAt: action === "rework" && !extra?.keepDue ? extra?.dueAt : undefined,
+        attachments: action === "rework" ? extra?.attachments || [] : undefined,
+      });
+      toast({
+        title: action === "approve" ? "✓ Tasdiqlandi" : t("tasks.rework.done"),
+      });
+      if (action === "rework") setReturnTask(null);
+    } catch (e: any) {
+      toast({
+        title: "Xato",
+        description: e?.message,
+        variant: "destructive",
+      });
+      throw e;
+    }
+  }
+
+  async function handleResolveExtension(
+    task: Vazifa,
+    action: "approve" | "reject",
+  ) {
+    try {
+      await resolveExtension.mutateAsync({ id: task.id, action });
+      toast({
+        title: action === "approve" ? "Muddat uzaytirildi" : "So'rov rad etildi",
+      });
+    } catch (e: any) {
+      toast({
+        title: "Xato",
+        description: e?.message,
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function removeTask(task: Vazifa) {
+    if (!canDeleteTaskUi(task, user?.id, user?.role)) {
+      toast({
+        title: "Ruxsat yo‘q",
+        description: t("tasks.delete.forbidden"),
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!confirm(`«${task.title}» o'chirilsinmi?`)) return;
+    try {
+      await deleteTask.mutateAsync(task.id);
+      toast({ title: t("tasks.delete.done") });
+    } catch (e: any) {
+      toast({
+        title: "O'chirilmadi",
+        description: e?.message,
+        variant: "destructive",
+      });
+    }
+  }
+
+  function deletableInColumn(colId: BoardCol): Vazifa[] {
+    return byColumn[colId].filter((task) =>
+      canDeleteTaskUi(task, user?.id, user?.role),
+    );
+  }
+
+  function exitSelectMode() {
+    setSelectCol(null);
+    setSelectedTaskIds(new Set());
+  }
+
+  function enterSelectMode(colId: BoardCol) {
+    setSelectCol(colId);
+    setSelectedTaskIds(new Set());
+    mobileColTouched.current = true;
+    setMobileCol(colId);
+  }
+
+  function toggleTaskSelected(taskId: number) {
+    setSelectedTaskIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  }
+
+  function selectAllDeletableInColumn(colId: BoardCol) {
+    const ids = deletableInColumn(colId).map((t) => t.id);
+    setSelectedTaskIds(new Set(ids));
+  }
+
+  async function removeTasksBatch(targets: Vazifa[], confirmMsg: string) {
+    if (targets.length === 0) {
+      toast({
+        title: t("tasks.col.deleteEmpty"),
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!confirm(confirmMsg)) return;
+    let ok = 0;
+    let fail = 0;
+    for (const task of targets) {
+      try {
+        await deleteTask.mutateAsync(task.id);
+        ok += 1;
+      } catch {
+        fail += 1;
+      }
+    }
+    if (ok > 0) {
+      toast({
+        title: t("tasks.delete.batchDone").replace("{n}", String(ok)),
+      });
+    }
+    if (fail > 0) {
+      toast({
+        title: t("tasks.delete.batchFail"),
+        description: `${fail}`,
+        variant: "destructive",
+      });
+    }
+    exitSelectMode();
+  }
+
+  async function removeColumnTasks(colId: BoardCol) {
+    const targets = deletableInColumn(colId);
+    const colLabel = t(COLUMNS.find((c) => c.id === colId)?.labelKey || "");
+    const msg = t("tasks.col.deleteConfirm")
+      .replace("{col}", colLabel)
+      .replace("{n}", String(targets.length));
+    await removeTasksBatch(targets, msg);
+  }
+
+  async function removeSelectedTasks(colId: BoardCol) {
+    const targets = byColumn[colId].filter(
+      (task) =>
+        selectedTaskIds.has(task.id) &&
+        canDeleteTaskUi(task, user?.id, user?.role),
+    );
+    const msg = t("tasks.col.deleteSelectedConfirm").replace(
+      "{n}",
+      String(targets.length),
+    );
+    await removeTasksBatch(targets, msg);
+  }
+
+  function renderTaskCard(task: Vazifa, colId: BoardCol) {
+    const overdue = colId === "past" || isTaskOverdue(task);
+    const canDelete = canDeleteTaskUi(task, user?.id, user?.role);
+    const selecting = selectCol === colId;
+  return (
+      <TaskCard
+        key={task.id}
+        task={task}
+        column={colId}
+        overdue={overdue}
+        isCreator={isCreatorOf(task)}
+        isAssignee={isAssigneeOf(task)}
+        canApprove={canApproveTaskUi(task, user?.id, user?.role)}
+        canDelete={canDelete}
+        selectMode={selecting}
+        selected={selectedTaskIds.has(task.id)}
+        canSelect={canDelete}
+        onToggleSelect={() => toggleTaskSelected(task.id)}
+        onOpen={() => {
+          if (selecting) {
+            if (canDelete) toggleTaskSelected(task.id);
+            return;
+          }
+          openEdit(task);
+        }}
+        onComplete={() => openComplete(task)}
+        onExtend={() => openExtend(task)}
+        onDelete={() => removeTask(task)}
+        onApproveExt={() => void handleResolveExtension(task, "approve")}
+        onRejectExt={() => void handleResolveExtension(task, "reject")}
+        onVerify={() => void handleVerify(task, "approve")}
+        onOpenReturn={() => setReturnTask(task)}
+        onAccept={() => void handleAccept(task)}
+      />
+    );
+  }
+
+  const viewTabs: {
+    id: BoardView | "analytics";
+    labelKey: string;
+    hint: string;
+    icon: React.ReactNode;
+    badge?: number;
+  }[] = [
+    {
+      id: "kanban",
+      labelKey: "tasks.view.kanban",
+      hint: locale === "ru" ? "Колонки по статусам" : "Holatlar bo‘yicha ustunlar",
+      icon: <LayoutGrid className="h-4 w-4" />,
+    },
+    {
+      id: "calendar",
+      labelKey: "tasks.view.calendar",
+      hint: locale === "ru" ? "Календарь сроков" : "Muddatlar kalendari",
+      icon: <CalendarDays className="h-4 w-4" />,
+      badge: kpi.today,
+    },
+    {
+      id: "analytics",
+      labelKey: "tasks.view.analytics",
+      hint: locale === "ru" ? "Статистика и отчёты" : "Statistika va hisobotlar",
+      icon: <BarChart3 className="h-4 w-4" />,
+    },
+    {
+      id: "list",
+      labelKey: "tasks.view.list",
+      hint: locale === "ru" ? "Табличный вид" : "Jadval ko‘rinishida",
+      icon: <List className="h-4 w-4" />,
+    },
+  ];
+
+  const B = locale === "ru" ? BOARD_TXT.ru : BOARD_TXT.uz;
+
+  const kpiCards: {
+    key: string;
+    col: "all" | BoardCol;
+    label: string;
+    value: number;
+    icon: React.ComponentType<{ className?: string }>;
+    tone: string;
+    bar: string;
+  }[] = [
+    {
+      key: "total",
+      col: "all",
+      label: t("tasks.kpi.total"),
+      value: kpi.total,
+      icon: CircleDot,
+      tone: "bg-[#0b3a5c]/[0.08] text-[#0b3a5c] ring-[#0b3a5c]/15 dark:bg-sky-400/10 dark:text-sky-300 dark:ring-sky-400/20",
+      bar: "bg-[#0b3a5c] dark:bg-sky-400",
+    },
+    {
+      key: "overdue",
+      col: "past",
+      label: t("tasks.kpi.overdue"),
+      value: kpi.overdue,
+      icon: AlertTriangle,
+      tone: "bg-rose-500/10 text-rose-600 ring-rose-500/20 dark:text-rose-300",
+      bar: "bg-rose-500",
+    },
+    {
+      key: "today",
+      col: "today",
+      label: t("tasks.kpi.today"),
+      value: kpi.today,
+      icon: CalendarClock,
+      tone: "bg-amber-500/10 text-amber-600 ring-amber-500/20 dark:text-amber-300",
+      bar: "bg-amber-500",
+    },
+    {
+      key: "progress",
+      col: "progress",
+      label: t("tasks.kpi.progress"),
+      value: kpi.progress,
+      icon: PlayCircle,
+      tone: "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-300",
+      bar: "bg-sky-500",
+    },
+    {
+      key: "review",
+      col: "review",
+      label: B.review,
+      value: kpi.review,
+      icon: ShieldCheck,
+      tone: "bg-violet-500/10 text-violet-600 ring-violet-500/20 dark:text-violet-300",
+      bar: "bg-violet-500",
+    },
+    {
+      key: "done",
+      col: "completed",
+      label: t("tasks.kpi.done"),
+      value: kpi.done,
+      icon: CheckCircle2,
+      tone: "bg-emerald-500/10 text-emerald-600 ring-emerald-500/20 dark:text-emerald-300",
+      bar: "bg-emerald-500",
+    },
+  ];
+
+  const todayYmd = toYmdLocal(new Date());
+  const weekRange = (() => {
+    const now = new Date();
+    const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+    const sun = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6);
+    return { from: toYmdLocal(mon), to: toYmdLocal(sun) };
+  })();
+  const monthRange = (() => {
+    const now = new Date();
+    return {
+      from: toYmdLocal(new Date(now.getFullYear(), now.getMonth(), 1)),
+      to: toYmdLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+    };
+  })();
+  const isRange = (r: { from: string; to: string }) => dateFrom === r.from && dateTo === r.to;
+  const toggleRange = (r: { from: string; to: string }) => {
+    if (isRange(r)) {
+      setDateFrom("");
+      setDateTo("");
+    } else {
+      setDateFrom(r.from);
+      setDateTo(r.to);
+    }
+  };
+  const toggleStatusCol = (col: BoardCol) => {
+    const next = statusColFilter === col ? "all" : col;
+    setStatusColFilter(next);
+    if (next !== "all") {
+      mobileColTouched.current = true;
+      setMobileCol(next);
+    }
+  };
+  const quickChips: {
+    key: string;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    active: boolean;
+    onClick: () => void;
+    dot?: string;
+  }[] = [
+    {
+      key: "today",
+      label: B.qToday,
+      icon: CalendarClock,
+      active: isRange({ from: todayYmd, to: todayYmd }),
+      onClick: () => toggleRange({ from: todayYmd, to: todayYmd }),
+    },
+    { key: "week", label: B.qWeek, icon: CalendarRange, active: isRange(weekRange), onClick: () => toggleRange(weekRange) },
+    { key: "month", label: B.qMonth, icon: CalendarDays, active: isRange(monthRange), onClick: () => toggleRange(monthRange) },
+    {
+      key: "urgent",
+      label: B.qUrgent,
+      icon: Zap,
+      dot: "bg-rose-500",
+      active: priorityFilter === "urgent",
+      onClick: () => setPriorityFilter(priorityFilter === "urgent" ? "all" : "urgent"),
+    },
+    {
+      key: "overdue",
+      label: B.qOverdue,
+      icon: Hourglass,
+      dot: "bg-rose-500",
+      active: statusColFilter === "past",
+      onClick: () => toggleStatusCol("past"),
+    },
+    {
+      key: "review",
+      label: B.qReview,
+      icon: ShieldCheck,
+      dot: "bg-violet-500",
+      active: statusColFilter === "review",
+      onClick: () => toggleStatusCol("review"),
+    },
+  ];
+
+  const calYear = calMonth.getFullYear();
+  const calMo = calMonth.getMonth();
+  const calDaysInMonth = new Date(calYear, calMo + 1, 0).getDate();
+  const calStartWeekday = (new Date(calYear, calMo, 1).getDay() + 6) % 7;
+  const weekDays = ["Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya"];
+
+  function switchView(next: BoardView) {
+    setViewMode(next);
+    try {
+      const url = new URL(window.location.href);
+      if (next === "kanban") url.searchParams.delete("view");
+      else url.searchParams.set("view", next);
+      window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const selectedDayTasks = useMemo(() => {
+    const dayTs = startOfDay(selectedCalDay).getTime();
+    return filtered
+      .filter((task) => {
+        if (!task.dueAt) return false;
+        return startOfDay(new Date(task.dueAt)).getTime() === dayTs;
+      })
+      .sort((a, b) => {
+        const da = a.dueAt ? new Date(a.dueAt).getTime() : 0;
+        const db = b.dueAt ? new Date(b.dueAt).getTime() : 0;
+        return da - db;
+      });
+  }, [filtered, selectedCalDay]);
+
+  function pickCalendarDay(day: Date) {
+    const d = startOfDay(day);
+    setSelectedCalDay(d);
+    setCalMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+  }
+
+  return (
+    <div className="flex h-full min-h-0 bg-background">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="shrink-0 border-b border-border/70 bg-card/90 px-3 pb-3 pt-3 backdrop-blur-md supports-[backdrop-filter]:bg-card/80 md:px-6 md:pb-4 md:pt-5">
+        <div className="flex flex-col gap-2.5 md:gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <h1 className="text-xl font-bold tracking-tight text-foreground md:text-[1.75rem]">
+              {t("tasks.title")}
+            </h1>
+          {canAssign && (
+            <Button
+                  size="sm"
+              onClick={() => openCreate("today")}
+                  className="h-9 shrink-0 gap-1.5 px-3 shadow-sm md:hidden"
+            >
+              <Plus className="h-4 w-4" />
+              {t("tasks.new")}
+            </Button>
+          )}
+        </div>
+            <p className="mt-0.5 hidden max-w-2xl text-sm leading-relaxed text-muted-foreground md:mt-1 md:block">
+              {t("tasks.subtitle")}
+            </p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground md:hidden">
+              {kpi.total} ta · {kpi.overdue > 0 ? `${kpi.overdue} kechikkan` : "navbatda"}
+            </p>
+        </div>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+            <div
+              role="tablist"
+              aria-label={t("tasks.title")}
+              className="inline-flex max-w-full items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden rounded-2xl border border-border/70 bg-card p-1 shadow-[0_1px_2px_rgba(15,39,68,0.05),0_6px_20px_-10px_rgba(15,39,68,0.18)] dark:shadow-black/20"
+            >
+              {viewTabs.map((tab) => {
+                const active = tab.id !== "analytics" && viewMode === tab.id;
+                const className = cn(
+                  "group relative inline-flex h-9 shrink-0 items-center gap-2 rounded-xl px-2.5 text-[13px] font-semibold transition-all duration-200 sm:px-3.5",
+                  active
+                    ? "bg-gradient-to-b from-[#0f4a74] to-[#0b3a5c] text-white shadow-md shadow-[#0b3a5c]/30 dark:from-primary dark:to-primary dark:text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                );
+                const badge =
+                  tab.badge && tab.badge > 0 ? (
+                    <span
+                      className={cn(
+                        "flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-bold tabular-nums",
+                        active
+                          ? "bg-white/20 text-white"
+                          : "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+                      )}
+                    >
+                      {tab.badge}
+                    </span>
+                  ) : null;
+                if (tab.id === "analytics") {
+                  return (
+                    <Link key={tab.id} href="/vazifalar/tahlil" className={className} title={tab.hint}>
+                      {tab.icon}
+                      <span className="hidden sm:inline">{t(tab.labelKey)}</span>
+                      <ArrowUpRight className="hidden h-3 w-3 opacity-50 transition group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:opacity-100 sm:block" />
+                    </Link>
+                  );
+                }
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    title={tab.hint}
+                    className={className}
+                    onClick={() => switchView(tab.id as BoardView)}
+                  >
+                    {tab.icon}
+                    <span className="hidden sm:inline">{t(tab.labelKey)}</span>
+                    {badge}
+                  </button>
+                );
+              })}
+            </div>
+            {canAssign && (
+              <button
+                type="button"
+                onClick={() => openCreate("today")}
+                className="group hidden h-[46px] shrink-0 items-center gap-2.5 whitespace-nowrap rounded-2xl bg-gradient-to-r from-[#0b3a5c] via-[#0f4a74] to-[#14598a] pl-1.5 pr-4 text-[13px] font-semibold text-white shadow-lg shadow-[#0b3a5c]/30 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-[#0b3a5c]/35 active:translate-y-0 sm:inline-flex dark:from-primary dark:via-primary dark:to-primary dark:text-primary-foreground"
+              >
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/20 transition-transform duration-200 group-hover:rotate-90">
+                  <Plus className="h-4 w-4" />
+                </span>
+                {t("tasks.new")}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+        {/* KPI — bosilganda faqat shu holatdagi vazifalar */}
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mt-4 md:grid md:grid-cols-3 md:gap-3 md:overflow-visible md:pb-0 2xl:grid-cols-6">
+          {kpiCards.map((card) => {
+            const Icon = card.icon;
+            const targetCol = card.col;
+            const active = targetCol !== "all" && statusColFilter === targetCol;
+            const share =
+              card.key === "total"
+                ? kpi.doneRate
+                : kpi.total
+                  ? Math.round((card.value / kpi.total) * 100)
+                  : 0;
+            return (
+              <button
+                key={card.key}
+                type="button"
+                aria-pressed={active}
+                onClick={() => {
+                  const next =
+                    targetCol !== "all" && statusColFilter === targetCol
+                      ? "all"
+                      : targetCol;
+                  setStatusColFilter(next);
+                  if (next !== "all") {
+                    mobileColTouched.current = true;
+                    setMobileCol(next);
+                    if (isMobile) switchView("kanban");
+                  }
+                }}
+                title={active ? B.activeHint : B.clickHint}
+                className={cn(
+                  "group relative flex min-w-[150px] shrink-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-card px-3 py-2.5 text-left shadow-[0_1px_2px_rgba(15,39,68,0.04),0_8px_24px_-16px_rgba(15,39,68,0.25)] transition-all duration-200 hover:-translate-y-0.5 hover:border-border hover:shadow-[0_2px_4px_rgba(15,39,68,0.05),0_14px_30px_-16px_rgba(15,39,68,0.35)] md:min-w-0 md:px-4 md:py-3.5 dark:shadow-black/20",
+                  active &&
+                    "border-[#0b3a5c]/45 ring-2 ring-[#0b3a5c]/15 dark:border-sky-400/50 dark:ring-sky-400/20",
+                )}
+              >
+                <span
+                  className={cn(
+                    "pointer-events-none absolute inset-x-0 top-0 h-[3px] opacity-0 transition-opacity group-hover:opacity-100",
+                    card.bar,
+                    active && "opacity-100",
+                  )}
+                />
+                <div className="flex items-center gap-2.5 md:gap-3">
+                  <span
+                    className={cn(
+                      "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 transition-transform duration-200 group-hover:scale-105 md:h-11 md:w-11",
+                      card.tone,
+                    )}
+                  >
+                    <Icon className="h-4 w-4 md:h-5 md:w-5" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[9.5px] font-bold uppercase tracking-[0.08em] text-muted-foreground md:text-[10.5px]">
+                      {card.label}
+                    </p>
+                    <p className="text-lg font-extrabold leading-tight tabular-nums text-foreground md:text-[26px]">
+                      {card.value}
+                    </p>
+                  </div>
+                  {active ? (
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center self-start rounded-full bg-[#0b3a5c] text-white shadow-sm dark:bg-sky-400 dark:text-slate-950">
+                      <Check className="h-3 w-3" strokeWidth={3} />
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-2.5 hidden md:block">
+                  <div className="mb-1 flex items-center justify-between text-[10.5px] text-muted-foreground">
+                    <span>{card.key === "total" ? B.completion : B.ofTotal}</span>
+                    <span className="font-semibold tabular-nums text-foreground/80">{share}%</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                    <div
+                      className={cn("h-full rounded-full transition-all duration-700", card.key === "total" ? "bg-emerald-500" : card.bar)}
+                      style={{ width: `${share}%` }}
+                    />
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+      </div>
+
+        <div className={cn(surface, "mt-3 overflow-hidden md:mt-4")}>
+          <div className="mb-0 flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2.5 lg:hidden">
+            <button
+              type="button"
+              onClick={() => setFiltersOpen((v) => !v)}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-lg border border-border/80 bg-muted/30 px-3 py-2 text-xs font-semibold text-foreground",
+                filtersOpen && "border-primary/40 bg-primary/5 text-primary",
+              )}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              {t("tasks.filter.toggle")}
+              {activeFilterCount > 0 ? (
+                <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-primary-foreground">
+                  {activeFilterCount}
+                </span>
+              ) : null}
+            </button>
+            {activeFilterCount > 0 ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] font-bold text-primary hover:bg-primary/15"
+                onClick={clearAllFilters}
+              >
+                <X className="h-3 w-3" />
+                {t("tasks.filter.dateClear")}
+              </button>
+            ) : null}
+          </div>
+
+          <div
+            className={cn(
+              "flex-col gap-3 p-3 sm:p-3.5",
+              filtersOpen ? "flex" : "hidden lg:flex",
+            )}
+          >
+            <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
+              {/* 1. Odam qidirish — eng muhim */}
+              <Popover
+                open={staffPickerOpen}
+                onOpenChange={(o) => {
+                  setStaffPickerOpen(o);
+                  if (!o) setStaffPickerQ("");
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className={cn(
+                      control,
+                      "flex w-full min-w-0 items-center gap-2.5 border px-3 text-left lg:min-w-[260px] lg:flex-1",
+                      (staffFilterActive || staffFilterIsAll || staffPickerOpen) && controlActive,
+                    )}
+                  >
+                    <Search className="h-4 w-4 shrink-0 text-[#0b3a5c]/60 dark:text-sky-300/70" />
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate",
+                        !staffFilterActive && !staffFilterIsAll && "font-normal text-muted-foreground",
+                      )}
+                    >
+                      {staffFilterActive || staffFilterIsAll
+                        ? staffFilterLabel
+                        : t("tasks.searchEmployee")}
+                    </span>
+                    {staffFilterActive ? (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          resetStaffFilterToMe();
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            resetStaffFilterToMe();
+                          }
+                        }}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </span>
+                    ) : (
+                      <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    )}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="z-[80] w-[min(100vw-2rem,360px)] overflow-hidden rounded-xl border border-border p-0 shadow-xl"
+                  align="start"
+                  sideOffset={6}
+                >
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      value={staffPickerQ}
+                      onValueChange={setStaffPickerQ}
+                      placeholder={t("tasks.searchEmployee")}
+                    />
+                    <CommandList className="max-h-[min(70dvh,24rem)]">
+                      <CommandEmpty>{t("tasks.noEmployee")}</CommandEmpty>
+                      <CommandGroup heading={t("tasks.filterByAssignee")}>
+                        <CommandItem
+                          value="__me__"
+                          onSelect={() => {
+                            resetStaffFilterToMe();
+                            setStaffPickerOpen(false);
+                            setStaffPickerQ("");
+                          }}
+                          className="gap-2.5 py-2"
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-600 text-[10px] font-bold text-white">
+                            {initialsFromName(user?.fullName) || "?"}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                            {t("tasks.filter.me")}
+                            {user?.fullName ? ` · ${user.fullName}` : ""}
+                          </span>
+                          <Check
+                            className={cn(
+                              "h-4 w-4 shrink-0 text-primary",
+                              assigneeFilter === null ? "opacity-100" : "opacity-0",
+                            )}
+                          />
+                        </CommandItem>
+                      </CommandGroup>
+                      {canBrowseAll ? (
+                        <CommandGroup
+                          heading={`${t("tasks.filter.allStaff")} · ${filteredStaffPickerOptions.length}`}
+                        >
+                          <CommandItem
+                            value="__all_staff__"
+                            onSelect={() => {
+                              setAssigneeFilter("all");
+                              setSearch("");
+                              setStaffPickerOpen(false);
+                              setStaffPickerQ("");
+                            }}
+                            className="gap-2.5 py-2"
+                          >
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground">
+                              ∞
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                              {t("tasks.filter.allStaff")}
+                            </span>
+                            <Check
+                              className={cn(
+                                "h-4 w-4 shrink-0 text-primary",
+                                assigneeFilter === "all" ? "opacity-100" : "opacity-0",
+                              )}
+                            />
+                          </CommandItem>
+                          {filteredStaffPickerOptions.map((o) => {
+                            const active =
+                              assigneeFilter !== null &&
+                              assigneeFilter !== "all" &&
+                              assigneeFilter.kind === o.kind &&
+                              assigneeFilter.id === o.id;
+                            return (
+                              <CommandItem
+                                key={o.key}
+                                value={`${o.name} ${o.meta} ${o.key}`}
+                                onSelect={() => {
+                                  setAssigneeFilter({
+                                    kind: o.kind,
+                                    id: o.id,
+                                    name: o.name,
+                                  });
+                                  setSearch(o.name);
+                                  setStaffPickerOpen(false);
+                                  setStaffPickerQ("");
+                                }}
+                                className="gap-2.5 py-2"
+                              >
+                                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                                  {initialsFromName(o.name) || "?"}
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <VerifiedName
+                                    name={o.name}
+                                    role={o.role}
+                                    userId={o.userId}
+                                    className="flex text-sm font-medium leading-tight"
+                                  />
+                                  <span className="block truncate text-[11px] text-muted-foreground">
+                                    {o.meta}
+                                    {o.workplace === "dorixona" ? " · Dorixona" : " · Ofis"}
+                                  </span>
+                                </span>
+                                <Check
+                                  className={cn(
+                                    "h-4 w-4 shrink-0 text-primary",
+                                    active ? "opacity-100" : "opacity-0",
+                                  )}
+                                />
+                              </CommandItem>
+                            );
+                          })}
+                        </CommandGroup>
+                      ) : null}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+
+              {/* 2. Bo‘lim */}
+              <Popover
+                open={deptPickerOpen}
+                onOpenChange={(o) => {
+                  setDeptPickerOpen(o);
+                  if (!o) setDeptPickerQ("");
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className={cn(
+                      control,
+                      "flex w-full items-center justify-between gap-2 border px-3 text-left lg:w-[184px]",
+                      branchActive && controlActive,
+                    )}
+                  >
+                    <Building2 className="h-4 w-4 shrink-0 opacity-60" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {branchFilter === "all" ? t("tasks.filter.allBranches") : branchFilter}
+                    </span>
+                    <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="z-[80] w-[min(100vw-2rem,280px)] overflow-hidden rounded-xl p-0 shadow-xl"
+                  align="start"
+                  sideOffset={6}
+                >
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      value={deptPickerQ}
+                      onValueChange={setDeptPickerQ}
+                      placeholder={t("tasks.filter.deptSearch")}
+                    />
+                    <CommandList className="max-h-[min(70dvh,22rem)]">
+                      <CommandEmpty>{t("tasks.filter.deptEmpty")}</CommandEmpty>
+                      <CommandGroup
+                        heading={`${t("tasks.filter.allBranches")} · ${branchOptions.length}`}
+                      >
+                        <CommandItem
+                          value="__all_depts__"
+                          onSelect={() => {
+                            setBranchFilter("all");
+                            setDeptPickerOpen(false);
+                            setDeptPickerQ("");
+                          }}
+                          className="gap-2"
+                        >
+                          <span className="min-w-0 flex-1 font-medium">
+                            {t("tasks.filter.allBranches")}
+                          </span>
+                          <Check
+                            className={cn(
+                              "h-4 w-4 shrink-0 text-primary",
+                              branchFilter === "all" ? "opacity-100" : "opacity-0",
+                            )}
+                          />
+                        </CommandItem>
+                        {filteredBranchOptions.map((b) => (
+                          <CommandItem
+                            key={b}
+                            value={b}
+                            onSelect={() => {
+                              setBranchFilter(b);
+                              if (canBrowseAll) {
+                                setAssigneeFilter("all");
+                                setSearch("");
+                              }
+                              setDeptPickerOpen(false);
+                              setDeptPickerQ("");
+                            }}
+                            className="gap-2"
+                          >
+                            <span className="min-w-0 flex-1 truncate">{b}</span>
+                            <Check
+                              className={cn(
+                                "h-4 w-4 shrink-0 text-primary",
+                                branchFilter === b ? "opacity-100" : "opacity-0",
+                              )}
+                            />
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+
+              {/* 3. Ofis / Dorixona */}
+              <Select
+                value={workplaceFilter}
+                onValueChange={(v) => setWorkplaceFilter(v as "all" | "ofis" | "dorixona")}
+              >
+                <SelectTrigger
+                  className={cn(control, "w-full justify-start gap-2 px-3 lg:w-[164px] [&>span]:flex-1 [&>span]:text-left", workplaceActive && controlActive)}
+                >
+                  <Briefcase className="h-4 w-4 shrink-0 opacity-60" />
+                  <SelectValue placeholder={t("tasks.filter.allWorkplace")} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t("tasks.filter.allWorkplace")}</SelectItem>
+                  <SelectItem value="ofis">{t("emp.ofis")}</SelectItem>
+                  <SelectItem value="dorixona">{t("emp.dorixona")}</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {/* 4. Ustuvorlik */}
+              <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                <SelectTrigger
+                  className={cn(control, "w-full justify-start gap-2 px-3 lg:w-[176px] [&>span]:flex-1 [&>span]:text-left", priorityActive && controlActive)}
+                >
+                  <Flag className="h-4 w-4 shrink-0 opacity-60" />
+                  <SelectValue placeholder={t("tasks.filter.allPriority")} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t("tasks.filter.allPriority")}</SelectItem>
+                  <SelectItem value="urgent">{t("tasks.priority.urgent")}</SelectItem>
+                  <SelectItem value="high">{t("tasks.priority.high")}</SelectItem>
+                  <SelectItem value="normal">{t("tasks.priority.normal")}</SelectItem>
+                  <SelectItem value="low">{t("tasks.priority.low")}</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {/* 5. Sana */}
+              <div
+                className={cn(
+                  "flex h-10 w-full items-center gap-0.5 rounded-xl border border-border/80 bg-background p-1 shadow-[0_1px_2px_rgba(15,39,68,0.04)] lg:w-auto",
+                  (dateFrom || dateTo) && "border-[#0b3a5c]/40 dark:border-sky-400/40",
+                )}
+                title={B.dateRange}
+              >
+                <Popover open={dateFromOpen} onOpenChange={setDateFromOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className={cn(
+                        "inline-flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-left text-[12.5px] text-foreground transition hover:bg-muted lg:w-[132px] lg:flex-none",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                        dateFrom && controlActive,
+                      )}
+                    >
+                      <Calendar className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate text-[11px] font-medium tabular-nums",
+                          !dateFrom && "font-normal text-muted-foreground",
+                        )}
+                      >
+                        {dateFrom ? formatFilterDate(dateFrom) : t("tasks.filter.dateFrom")}
+                      </span>
+                      {dateFrom ? (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDateFrom("");
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setDateFrom("");
+                            }
+                          }}
+                          aria-label={t("tasks.filter.dateClear")}
+                        >
+                          <X className="h-3 w-3" />
+                        </span>
+                      ) : null}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-auto rounded-xl border border-border p-0 shadow-lg" sideOffset={6} onOpenAutoFocus={(e) => e.preventDefault()}>
+                    <DayPickerCalendar
+                      mode="single"
+                      className="rounded-xl"
+                      selected={parseYmdLocal(dateFrom)}
+                      onSelect={(day) => {
+                        const next = day ? toYmdLocal(day) : "";
+                        setDateFrom(next);
+                        if (next && dateTo && next > dateTo) setDateTo(next);
+                        setDateFromOpen(false);
+                      }}
+                      defaultMonth={parseYmdLocal(dateFrom) || new Date()}
+                      disabled={dateTo ? { after: parseYmdLocal(dateTo)! } : undefined}
+                    />
+                  </PopoverContent>
+                </Popover>
+
+                <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+
+                <Popover open={dateToOpen} onOpenChange={setDateToOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className={cn(
+                        "inline-flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 text-left text-[12.5px] text-foreground transition hover:bg-muted lg:w-[132px] lg:flex-none",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                        dateTo && controlActive,
+                      )}
+                    >
+                      <Calendar className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate text-[11px] font-medium tabular-nums",
+                          !dateTo && "font-normal text-muted-foreground",
+                        )}
+                      >
+                        {dateTo ? formatFilterDate(dateTo) : t("tasks.filter.dateTo")}
+                      </span>
+                      {dateTo ? (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDateTo("");
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setDateTo("");
+                            }
+                          }}
+                          aria-label={t("tasks.filter.dateClear")}
+                        >
+                          <X className="h-3 w-3" />
+                        </span>
+                      ) : null}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-auto rounded-xl border border-border p-0 shadow-lg" sideOffset={6} onOpenAutoFocus={(e) => e.preventDefault()}>
+                    <DayPickerCalendar
+                      mode="single"
+                      className="rounded-xl"
+                      selected={parseYmdLocal(dateTo)}
+                      onSelect={(day) => {
+                        const next = day ? toYmdLocal(day) : "";
+                        setDateTo(next);
+                        if (next && dateFrom && next < dateFrom) setDateFrom(next);
+                        setDateToOpen(false);
+                      }}
+                      defaultMonth={parseYmdLocal(dateTo) || parseYmdLocal(dateFrom) || new Date()}
+                      disabled={dateFrom ? { before: parseYmdLocal(dateFrom)! } : undefined}
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+            </div>
+
+            <div className="flex flex-col gap-2.5 border-t border-dashed border-border/70 pt-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <span className="mr-0.5 inline-flex shrink-0 items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                  {B.quick}
+                </span>
+                {quickChips.map((chip) => {
+                  const ChipIcon = chip.icon;
+                  return (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      aria-pressed={chip.active}
+                      onClick={chip.onClick}
+                      className={cn(
+                        "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold transition-all duration-150",
+                        chip.active
+                          ? "border-[#0b3a5c] bg-[#0b3a5c] text-white shadow-sm shadow-[#0b3a5c]/25 dark:border-sky-400 dark:bg-sky-400 dark:text-slate-950"
+                          : "border-border/80 bg-background text-muted-foreground hover:border-[#0b3a5c]/30 hover:text-foreground dark:hover:border-sky-400/30",
+                      )}
+                    >
+                      <ChipIcon className="h-3.5 w-3.5" />
+                      {chip.label}
+                      {chip.dot && !chip.active ? (
+                        <span className={cn("h-1.5 w-1.5 rounded-full", chip.dot)} />
+                      ) : null}
+                      {chip.active ? <X className="h-3 w-3 opacity-80" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex shrink-0 items-center gap-2">
+                <Select value={sortMode} onValueChange={(v) => setSortMode(v as TaskSort)}>
+                  <SelectTrigger
+                    className="h-8 w-auto gap-1.5 rounded-full border-border/80 bg-background px-3 text-[12px] font-semibold shadow-none"
+                    aria-label={B.sort}
+                  >
+                    <ArrowUpDown className="h-3.5 w-3.5 opacity-60" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="due">{B.sortDue}</SelectItem>
+                    <SelectItem value="priority">{B.sortPriority}</SelectItem>
+                    <SelectItem value="newest">{B.sortNewest}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <span className="inline-flex h-8 items-center rounded-full bg-muted/70 px-3 text-[12px] text-muted-foreground">
+                  <span className="mr-1 font-bold tabular-nums text-foreground">{filtered.length}</span>
+                  {B.found}
+                </span>
+                {activeFilterCount > 0 ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-rose-500/10 px-3 text-[12px] font-bold text-rose-600 ring-1 ring-rose-500/25 transition hover:bg-rose-500/15 dark:text-rose-300"
+                    onClick={clearAllFilters}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {B.clear}
+                    <span className="rounded-full bg-rose-500 px-1.5 py-px text-[10px] tabular-nums text-white">
+                      {activeFilterCount}
+                    </span>
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4 md:p-5">
+        <div key={viewMode} className="min-h-0 min-w-0 animate-in fade-in-0 duration-200">
+          {isLoading ? (
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              {t("ui.loading")}
+                </div>
+          ) : viewMode === "list" ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-bold text-foreground">{t("tasks.view.list")}</h2>
+                  <p className="text-xs text-muted-foreground">
+                    {filtered.length} {t("tasks.filteredCount")}
+                  </p>
+            </div>
+            </div>
+
+              {/* Mobil: kartalar — jadval emas */}
+              <div className="space-y-2.5 md:hidden">
+                {filtered.length === 0 ? (
+                  <div className={cn(surface, "px-4 py-12 text-center text-sm text-muted-foreground")}>
+                    {t("tasks.empty.done")}
+                  </div>
+                ) : (
+                  filtered.map((task) => renderTaskCard(task, boardColumnFor(task)))
+                )}
+              </div>
+
+              <div className={cn(surface, "hidden overflow-hidden md:block")}>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[720px] text-left text-sm">
+                    <thead className="border-b border-border bg-muted/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">ID</th>
+                        <th className="px-4 py-3 font-semibold">{t("tasks.field.title")}</th>
+                        <th className="px-4 py-3 font-semibold">{t("tasks.assignee")}</th>
+                        <th className="px-4 py-3 font-semibold">{t("tasks.deadline")}</th>
+                        <th className="px-4 py-3 font-semibold">{t("tasks.priorityLabel")}</th>
+                        <th className="px-4 py-3 font-semibold">Status</th>
+                        <th className="px-4 py-3 font-semibold" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map((task) => {
+                        const col = boardColumnFor(task);
+                        return (
+                          <tr
+                            key={task.id}
+                            className="cursor-pointer border-b border-border/60 hover:bg-muted/40"
+                            onClick={() => openEdit(task)}
+                          >
+                            <td className="px-4 py-3 text-xs text-muted-foreground">
+                              TK-{task.id}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="font-medium text-foreground">{task.title}</div>
+                              {task.description ? (
+                                <div className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
+                                  {htmlDescToPlain(task.description)}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[9px] font-bold text-primary-foreground">
+                                  {initialsFromName(task.assigneeName) || "?"}
+                                </span>
+                                <span className="truncate text-muted-foreground">
+                                  {task.assigneeName || "—"}
+                                </span>
+          </div>
+                            </td>
+                            <td
+                              className={cn(
+                                "px-4 py-3",
+                                dueDateToneClass(task.dueAt, task.status),
+                              )}
+                            >
+                              {formatDate(task.dueAt)}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span
+                                className={cn(
+                                  "rounded-md border px-2 py-0.5 text-[10px] font-semibold",
+                                  PRIORITY_CLASS[task.priority],
+                                )}
+                              >
+                                {t(PRIORITY_KEYS[task.priority] || PRIORITY_KEYS.normal!)}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">
+                              {t(`tasks.status.${task.status}`)}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openEdit(task);
+                                }}
+                              >
+                                {t("tasks.analytics.openTask")}
+            </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {filtered.length === 0 && (
+                  <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+                    {t("tasks.empty.done")}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : viewMode === "calendar" ? (
+            <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
+              <div className={cn(surface, "p-4")}>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    className="rounded-lg border border-border p-1.5 text-muted-foreground hover:bg-muted"
+                    onClick={() =>
+                      setCalMonth(
+                        calScope === "year"
+                          ? new Date(calYear - 1, calMo, 1)
+                          : new Date(calYear, calMo - 1, 1),
+                      )
+                    }
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <div className="flex flex-col items-center gap-2">
+                    <h3 className="text-sm font-semibold capitalize text-foreground">
+                      {calScope === "year" ? String(calYear) : formatMonthYear(calMonth, t)}
+                    </h3>
+                    <div className="inline-flex rounded-lg border border-border/80 bg-muted/40 p-0.5">
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
+                          calScope === "month"
+                            ? "bg-card text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        onClick={() => setCalScope("month")}
+                      >
+                        {t("tasks.cal.monthly")}
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
+                          calScope === "year"
+                            ? "bg-card text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        onClick={() => setCalScope("year")}
+                      >
+                        {t("tasks.cal.yearly")}
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-border p-1.5 text-muted-foreground hover:bg-muted"
+                    onClick={() =>
+                      setCalMonth(
+                        calScope === "year"
+                          ? new Date(calYear + 1, calMo, 1)
+                          : new Date(calYear, calMo + 1, 1),
+                      )
+                    }
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {calScope === "year" ? (
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {Array.from({ length: 12 }).map((_, monthIdx) => {
+                      const daysInM = new Date(calYear, monthIdx + 1, 0).getDate();
+                      const startWd = (new Date(calYear, monthIdx, 1).getDay() + 6) % 7;
+                      const monthLabel = monthName(monthIdx, t);
+                      return (
+                        <div
+                          key={monthIdx}
+                          className="rounded-xl border border-border/70 bg-card/60 p-2.5"
+                        >
+                          <button
+                            type="button"
+                            className="mb-1.5 w-full text-left text-[12px] font-bold capitalize text-foreground hover:text-primary"
+                            onClick={() => {
+                              setCalMonth(new Date(calYear, monthIdx, 1));
+                              setCalScope("month");
+                            }}
+                          >
+                            {monthLabel}
+                          </button>
+                          <div className="mb-1 grid grid-cols-7 gap-0.5 text-center text-[8px] font-semibold uppercase text-muted-foreground">
+                            {weekDays.map((d) => (
+                              <div key={`${monthIdx}-${d}`}>{d.charAt(0)}</div>
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-7 gap-0.5">
+                            {Array.from({ length: startWd }).map((_, i) => (
+                              <div key={`ye-${monthIdx}-${i}`} className="h-7" />
+                            ))}
+                            {Array.from({ length: daysInM }).map((_, i) => {
+                              const day = i + 1;
+                              const dayStart = startOfDay(new Date(calYear, monthIdx, day));
+                              const dayTasks = filtered.filter((task) => {
+                                if (!task.dueAt) return false;
+                                return (
+                                  startOfDay(new Date(task.dueAt)).getTime() === dayStart.getTime()
+                                );
+                              });
+                              const isToday =
+                                dayStart.getTime() === startOfDay(new Date()).getTime();
+                              const isSelected =
+                                dayStart.getTime() === startOfDay(selectedCalDay).getTime();
+                              const toneTask = dayTasks.find(
+                                (x) => x.status !== "verified" && x.status !== "cancelled",
+                              );
+                              return (
+                                <button
+                                  key={day}
+                                  type="button"
+                                  onClick={() => pickCalendarDay(dayStart)}
+                                  className={cn(
+                                    "relative flex h-7 flex-col items-center justify-center rounded-md text-[10px] transition hover:bg-muted",
+                                    isSelected &&
+                                      "bg-primary font-bold text-primary-foreground hover:bg-primary",
+                                    !isSelected && isToday && "font-bold text-primary",
+                                    !isSelected && !isToday && "text-foreground",
+                                  )}
+                                >
+                                  {day}
+                                  {dayTasks.length > 0 && !isSelected && (
+                                    <span
+                                      className={cn(
+                                        "absolute bottom-0.5 h-1 w-1 rounded-full",
+                                        dueDateDotClass(toneTask?.dueAt, toneTask?.status),
+                                      )}
+                                    />
+                                  )}
+                                </button>
+                              );
+                            })}
+                </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-2 grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase text-muted-foreground">
+                      {weekDays.map((d) => (
+                        <div key={d}>{d}</div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-7 gap-1.5">
+                      {Array.from({ length: calStartWeekday }).map((_, i) => (
+                        <div key={`e-${i}`} className="min-h-[88px] rounded-lg bg-muted/20" />
+                      ))}
+                      {Array.from({ length: calDaysInMonth }).map((_, i) => {
+                        const day = i + 1;
+                        const dayStart = startOfDay(new Date(calYear, calMo, day));
+                        const dayTasks = filtered.filter((task) => {
+                          if (!task.dueAt) return false;
+                          return startOfDay(new Date(task.dueAt)).getTime() === dayStart.getTime();
+                        });
+                        const isToday = dayStart.getTime() === startOfDay(new Date()).getTime();
+                        const isSelected =
+                          dayStart.getTime() === startOfDay(selectedCalDay).getTime();
+                        return (
+                          <button
+                            key={day}
+                            type="button"
+                            onClick={() => pickCalendarDay(dayStart)}
+                            className={cn(
+                              "min-h-[88px] rounded-lg border border-border/70 bg-card p-1.5 text-left transition hover:border-primary/40 hover:bg-primary/5",
+                              isToday && "border-primary/40",
+                              isSelected && "border-primary bg-primary/10 ring-2 ring-primary/30",
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                "mb-1 flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground"
+                                  : isToday
+                                    ? "text-primary"
+                                    : "text-foreground",
+                              )}
+                            >
+                              {day}
+                            </div>
+                            <div className="space-y-0.5">
+                              {dayTasks.slice(0, 2).map((task) => (
+                                <div
+                                  key={task.id}
+                                  className={cn(
+                                    "truncate rounded px-1 py-0.5 text-[9px] font-medium",
+                                    dueDateChipClass(task.dueAt, task.status),
+                                  )}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openEdit(task);
+                                  }}
+                                >
+                                  {task.title}
+                                </div>
+                              ))}
+                              {dayTasks.length > 2 && (
+                                <div className="text-[9px] text-muted-foreground">
+                                  +{dayTasks.length - 2}
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className={cn(surface, "flex flex-col p-4")}>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-foreground">
+                      {formatDayMonthYear(selectedCalDay, t)}
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      {selectedDayTasks.length} {t("tasks.filteredCount")}
+                    </p>
+                  </div>
+                  {canAssign && (
+                <Button
+                      size="sm"
+                      className="h-8"
+                  onClick={() => {
+                        const d = new Date(selectedCalDay);
+                        d.setHours(18, 0, 0, 0);
+                        setCreateDueAt(d.toISOString());
+                        setEditing(null);
+                        setEditOpen(true);
+                      }}
+                    >
+                      <Plus className="mr-1 h-3.5 w-3.5" />
+                      {t("tasks.new")}
+                </Button>
+              )}
+                </div>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+                  {selectedDayTasks.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-border px-3 py-10 text-center text-sm text-muted-foreground">
+                      {t("tasks.empty.today")}
+                    </div>
+                  ) : (
+                    selectedDayTasks.map((task) => (
+                      <button
+                        key={task.id}
+                        type="button"
+                        className="w-full rounded-xl border border-border/80 bg-muted/20 p-3 text-left transition hover:border-primary/40 hover:bg-primary/5"
+                        onClick={() => openEdit(task)}
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span
+                            className={cn(
+                              "rounded-md border px-1.5 py-0.5 text-[10px] font-bold",
+                              PRIORITY_CLASS[task.priority],
+                            )}
+                          >
+                            {t(PRIORITY_KEYS[task.priority] || PRIORITY_KEYS.normal!)}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">TK-{task.id}</span>
+                        </div>
+                        <div className="text-sm font-semibold text-foreground">{task.title}</div>
+                        <div
+                          className={cn(
+                            "mt-1 flex items-center gap-2 text-[11px]",
+                            dueDateToneClass(task.dueAt, task.status),
+                          )}
+                        >
+                          <Clock className="h-3 w-3" />
+                          {formatDate(task.dueAt)}
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[8px] font-bold text-primary-foreground">
+                            {initialsFromName(task.assigneeName) || "?"}
+                          </span>
+                          {task.assigneeName || "—"}
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full min-h-0 flex-col gap-3">
+              <div className="flex gap-1.5 overflow-x-auto pb-0.5 md:hidden [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {COLUMNS.map((col) => {
+                  const active = mobileCol === col.id;
+                  const count = byColumn[col.id].length;
+                  return (
+                    <button
+                      key={col.id}
+                      type="button"
+                      onClick={() => {
+                        mobileColTouched.current = true;
+                        setMobileCol(col.id);
+                      }}
+                      className={cn(
+                        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-bold transition",
+                        active
+                          ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                          : "border-border/80 bg-card text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 rounded-full",
+                          active ? "bg-primary-foreground" : col.accentDot,
+                        )}
+                      />
+                      {t(col.labelKey)}
+                      <span
+                        className={cn(
+                          "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
+                          active ? "bg-white/20" : "bg-muted",
+                        )}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col gap-3 md:min-w-max md:flex-row md:overflow-x-auto md:pb-1">
+              {COLUMNS.map((col) => (
+                <section
+                  key={col.id}
+                  className={cn(
+                    "min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_1px_2px_rgba(15,39,68,0.04),0_10px_30px_-18px_rgba(15,39,68,0.3)] md:min-h-0 md:w-[296px] dark:shadow-black/25",
+                    mobileCol === col.id ? "flex" : "hidden md:flex",
+                  )}
+                >
+                  <header className="shrink-0 border-b border-border/60">
+                    <div className={cn("h-[3px]", col.top)} />
+                    <div className={cn("px-3 pb-2.5 pt-3", col.headerBg)}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span
+                            className={cn(
+                              "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1",
+                              col.iconTone,
+                            )}
+                          >
+                            <col.icon className="h-[18px] w-[18px]" />
+                          </span>
+                          <div className="min-w-0">
+                            <h2 className="truncate text-[14px] font-bold leading-tight text-foreground">
+                              {t(col.labelKey)}
+                            </h2>
+                            <p className="truncate text-[11px] text-muted-foreground">{t(col.hintKey)}</p>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <span
+                            className={cn(
+                              "flex h-6 min-w-[24px] items-center justify-center rounded-lg px-1.5 text-[12px] font-extrabold tabular-nums",
+                              col.countBg,
+                            )}
+                          >
+                            {byColumn[col.id].length}
+                          </span>
+                        {(() => {
+                          const deletable = deletableInColumn(col.id);
+                          const isAdminDelete = canSeePrivateTasks(user?.role);
+                          const selecting = selectCol === col.id;
+                          const selectedInCol = deletable.filter((t) =>
+                            selectedTaskIds.has(t.id),
+                          ).length;
+                          if (deletable.length === 0 && !isAdminDelete) return null;
+                          return (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    "inline-flex rounded-md p-1 text-muted-foreground hover:bg-card/80 hover:text-foreground",
+                                    selecting && "bg-primary/10 text-primary",
+                                  )}
+                                  aria-label={t("tasks.col.menu")}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="min-w-[230px]">
+                                <DropdownMenuItem
+                                  disabled={deletable.length === 0}
+                                  className="gap-2"
+                                  onClick={() => {
+                                    if (selecting) exitSelectMode();
+                                    else enterSelectMode(col.id);
+                                  }}
+                                >
+                                  <CheckSquare className="h-3.5 w-3.5" />
+                                  <span className="flex-1 truncate">
+                                    {selecting
+                                      ? t("tasks.col.cancelSelect")
+                                      : t("tasks.col.selectDelete")}
+                                  </span>
+                                </DropdownMenuItem>
+                                {selecting ? (
+                                  <>
+                                    <DropdownMenuItem
+                                      disabled={deletable.length === 0}
+                                      className="gap-2"
+                                      onClick={() => selectAllDeletableInColumn(col.id)}
+                                    >
+                                      <Square className="h-3.5 w-3.5" />
+                                      <span className="flex-1 truncate">
+                                        {t("tasks.col.selectAll")}
+                                      </span>
+                                      <span className="tabular-nums opacity-70">
+                                        {deletable.length}
+                                      </span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      disabled={
+                                        selectedInCol === 0 || deleteTask.isPending
+                                      }
+                                      className="gap-2 text-rose-600 focus:bg-rose-50 focus:text-rose-700 dark:text-rose-400 dark:focus:bg-rose-950/50"
+                                      onClick={() => void removeSelectedTasks(col.id)}
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                      <span className="flex-1 truncate">
+                                        {t("tasks.col.deleteSelected")}
+                                      </span>
+                                      <span className="tabular-nums opacity-70">
+                                        {selectedInCol}
+                                      </span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                  </>
+                                ) : null}
+                                <DropdownMenuItem
+                                  disabled={deletable.length === 0 || deleteTask.isPending}
+                                  className="gap-2 text-rose-600 focus:bg-rose-50 focus:text-rose-700 dark:text-rose-400 dark:focus:bg-rose-950/50"
+                                  onClick={() => void removeColumnTasks(col.id)}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <span className="flex-1 truncate">
+                                    {isAdminDelete
+                                      ? t("tasks.col.deleteAll")
+                                      : t("tasks.col.deleteMine")}
+                                  </span>
+                                  <span className="tabular-nums opacity-70">
+                                    {deletable.length}
+                                  </span>
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          );
+                        })()}
+                        </div>
+                      </div>
+                      <div className="mt-2.5 flex items-center gap-2">
+                        <div className="h-1 flex-1 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
+                          <div
+                            className={cn("h-full rounded-full transition-all duration-700", col.accentDot)}
+                            style={{
+                              width: `${kpi.total ? Math.round((byColumn[col.id].length / kpi.total) * 100) : 0}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">
+                          {kpi.total ? Math.round((byColumn[col.id].length / kpi.total) * 100) : 0}%
+                        </span>
+                      </div>
+                    </div>
+                    {selectCol === col.id ? (
+                      <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 bg-rose-50/70 px-2.5 py-2 dark:bg-rose-950/30">
+                        <p className="min-w-0 flex-1 text-[10px] font-medium text-rose-800 dark:text-rose-200">
+                          {t("tasks.col.selectHint")}
+                          {(() => {
+                            const n = byColumn[col.id].filter((task) =>
+                              selectedTaskIds.has(task.id),
+                            ).length;
+                            return n > 0 ? ` · ${n}` : "";
+                          })()}
+                        </p>
+                        <button
+                          type="button"
+                          className="rounded-md px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-card"
+                          onClick={() => selectAllDeletableInColumn(col.id)}
+                        >
+                          {t("tasks.col.selectAll")}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            !byColumn[col.id].some((task) =>
+                              selectedTaskIds.has(task.id),
+                            ) || deleteTask.isPending
+                          }
+                          className="inline-flex items-center gap-1 rounded-md bg-rose-600 px-2 py-1 text-[10px] font-bold text-white disabled:opacity-40"
+                          onClick={() => void removeSelectedTasks(col.id)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          {t("tasks.col.deleteSelected")}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-card"
+                          onClick={exitSelectMode}
+                        >
+                          {t("tasks.col.cancelSelect")}
+                        </button>
+                      </div>
+                    ) : null}
+                  </header>
+
+                  <div className="flex-1 space-y-2.5 overflow-y-auto bg-slate-50/70 px-2.5 py-2.5 dark:bg-slate-900/30">
+                    {byColumn[col.id].length === 0 ? (
+                      <div className="flex flex-col items-center rounded-xl border border-dashed border-border/90 bg-card/70 px-4 py-8 text-center">
+                        <span
+                          className={cn(
+                            "mb-3 flex h-12 w-12 items-center justify-center rounded-2xl ring-1",
+                            col.id === "past"
+                              ? "bg-emerald-500/10 text-emerald-600 ring-emerald-500/20 dark:text-emerald-300"
+                              : col.iconTone,
+                          )}
+                        >
+                          {col.id === "past" ? (
+                            <CheckCircle2 className="h-6 w-6" />
+                          ) : (
+                            <col.icon className="h-6 w-6" />
+                          )}
+                        </span>
+                        <p className="text-[13px] font-bold text-foreground">{B[COLUMN_EMPTY[col.id].title]}</p>
+                        <p className="mt-1 max-w-[210px] text-[11.5px] leading-relaxed text-muted-foreground">
+                          {B[COLUMN_EMPTY[col.id].hint]}
+                        </p>
+                        {canAssign && col.allowCreate && col.id !== "past" ? (
+                          <button
+                            type="button"
+                            onClick={() => openCreate(col.id)}
+                            className="mt-3.5 inline-flex h-8 items-center gap-1.5 rounded-full bg-[#0b3a5c] px-3.5 text-[12px] font-semibold text-white shadow-sm shadow-[#0b3a5c]/25 transition hover:-translate-y-0.5 hover:shadow-md dark:bg-sky-500 dark:text-slate-950"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            {B.addHere}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : (
+                      byColumn[col.id].map((task) => renderTaskCard(task, col.id))
+                    )}
+                  </div>
+
+                  {canAssign && (
+                    <div className="border-t border-border/60 bg-card p-2.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openCreate(
+                            col.id === "review" || col.id === "completed" ? "today" : col.id,
+                          )
+                        }
+                        className="group flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border text-[12.5px] font-semibold text-muted-foreground transition hover:border-[#0b3a5c]/40 hover:bg-[#0b3a5c]/[0.04] hover:text-[#0b3a5c] dark:hover:border-sky-400/40 dark:hover:bg-sky-400/5 dark:hover:text-sky-300"
+                      >
+                        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-muted transition group-hover:rotate-90 group-hover:bg-[#0b3a5c] group-hover:text-white dark:group-hover:bg-sky-400 dark:group-hover:text-slate-950">
+                          <Plus className="h-3.5 w-3.5" />
+                        </span>
+                        {t("tasks.new")}
+                      </button>
+                    </div>
+                  )}
+                </section>
+              ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      </div>
+
+        <TasksSidebar
+          tasks={filtered}
+          scheduleTasks={todaySchedule.length ? todaySchedule : byColumn.today.slice(0, 5)}
+          month={calMonth}
+          onMonthChange={setCalMonth}
+          selectedDay={selectedCalDay}
+          onPickDay={(day) => {
+            pickCalendarDay(day);
+            switchView("calendar");
+          }}
+          weekDays={weekDays}
+          formatMonth={(d) => formatMonthYear(d, t)}
+          accentClass={(task) =>
+            COLUMNS.find((x) => x.id === boardColumnFor(task))?.accentDot ?? "bg-primary"
+          }
+          onOpenTask={openEdit}
+          quickLabels={{
+            excel: t("tasks.quick.excel"),
+            pdf: t("tasks.quick.pdf"),
+            templates: t("tasks.quick.templates"),
+            archive: t("tasks.quick.archive"),
+          }}
+          onExcel={() => void exportExcel()}
+          onPdf={() => void exportPdf()}
+          onTemplates={() => canAssign && openCreate("today")}
+          onArchive={() => {
+            setPriorityFilter("all");
+            setBranchFilter("all");
+            setWorkplaceFilter("all");
+            setStatusColFilter("all");
+            setDateFrom("");
+            setDateTo("");
+            clearSearchFilter();
+            toast({ title: t("tasks.quick.archiveDone") });
+          }}
+        />
+
+      <TaskFormDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        editing={editing}
+        assigneeOptions={assigneeOptions}
+        branchOptions={branchOptions}
+        currentUserName={user?.fullName}
+        currentUserRole={user?.role}
+        currentUserId={user?.id}
+        assignerName={assignerOf(editing).name}
+        assignerRole={assignerOf(editing).role}
+        saving={createTask.isPending || updateTask.isPending}
+        defaultDueAt={createDueAt}
+        onSave={handleSave}
+        onPersistChat={handlePersistChat}
+        onVerify={
+          editing && canApproveTaskUi(editing, user?.id, user?.role)
+            ? async (action) => {
+                if (action === "rework") {
+                  setEditOpen(false);
+                  setReturnTask(editing);
+                  return;
+                }
+                await handleVerify(editing, "approve");
+                setEditOpen(false);
+              }
+            : undefined
+        }
+        onTaskUpdated={(updated) => setEditing(updated)}
+        batchSiblings={
+          editing?.meta?.batchId
+            ? tasks.filter((t) => t.meta?.batchId === editing.meta?.batchId)
+            : []
+        }
+        onOpenBatchTask={(task) => {
+          setEditing(task);
+        }}
+      />
+
+      <TaskReturnDialog
+        open={!!returnTask}
+        task={returnTask}
+        busy={verifyTask.isPending}
+        onOpenChange={(v) => {
+          if (!v) setReturnTask(null);
+        }}
+        onPickFiles={async (list) => {
+          if (!list?.length) return [];
+          const out: TaskAttachment[] = [];
+          for (const file of Array.from(list)) {
+            out.push(await fileToAttachment(file));
+          }
+          return out;
+        }}
+        onSubmit={async (payload) => {
+          if (!returnTask) return;
+          await handleVerify(returnTask, "rework", payload);
+        }}
+      />
+
+      <TaskFormDialog
+        open={viewOpen}
+        onOpenChange={setViewOpen}
+        mode={viewDialogMode}
+        editing={activeTask}
+        assigneeOptions={assigneeOptions}
+        branchOptions={branchOptions}
+        currentUserName={user?.fullName}
+        currentUserRole={user?.role}
+        currentUserId={user?.id}
+        assignerName={assignerOf(activeTask).name}
+        assignerRole={assignerOf(activeTask).role}
+        saving={completeTask.isPending || acceptTask.isPending}
+        onSave={async () => {}}
+        onPersistChat={async (patch) => {
+          if (!activeTask) return;
+          const updated = await updateTask.mutateAsync({
+            id: activeTask.id,
+            data: {
+              meta: patch.meta,
+              attachments: patch.attachments,
+            },
+          });
+          setActiveTask(updated);
+        }}
+        onWorkAccept={async () => {
+          if (!activeTask) return;
+          try {
+            const updated = await acceptTask.mutateAsync(activeTask.id);
+            setActiveTask(updated);
+            toast({ title: "Vazifa qabul qilindi" });
+          } catch (e: any) {
+            toast({
+              title: "Qabul qilinmadi",
+              description: e?.message,
+              variant: "destructive",
+            });
+          }
+        }}
+        onWorkComplete={async (note, files) => {
+          if (!activeTask) return;
+          try {
+            const updated = await completeTask.mutateAsync({
+              id: activeTask.id,
+              completionNote: note || null,
+              completionAttachments: files,
+            });
+            setActiveTask(updated);
+            toast({ title: "Bajarildi — belgilovchiga yuborildi" });
+            setViewOpen(false);
+          } catch (e: any) {
+            toast({
+              title: "Yuborilmadi",
+              description: e?.message,
+              variant: "destructive",
+            });
+          }
+        }}
+        onWorkExtend={() => {
+          if (!activeTask) return;
+          setViewOpen(false);
+          openExtend(activeTask);
+        }}
+        onTaskUpdated={(updated) => setActiveTask(updated)}
+      />
+
+      {/* Ijrochi: bajarish — legacy fallback (kartadan ochilmasa) */}
+      <Dialog open={completeOpen} onOpenChange={setCompleteOpen}>
+        <DialogContent
+          className="max-w-lg"
+          onFocusOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>Vazifani bajarish</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            «{activeTask?.title}» — matn, rasm yoki fayl qo‘shing va
+            yuboring. Belgilagan odamga qaytadi.
+          </p>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Natija matni</Label>
+              <Textarea
+                value={completionNote}
+                onChange={(e) => setCompletionNote(e.target.value)}
+                rows={4}
+                placeholder="Nima qilganingizni yozing..."
+              />
+            </div>
+            <div className="space-y-2">
+              <FileDropzone
+                inputRef={completeFileRef}
+                label="RASM / FAYL"
+                title="Rasm yoki fayl biriktiring"
+                hint="PDF, DOCX, rasm — 10 MB gacha. Bosib tanlang yoki shu yerga tortib tashlang"
+                uploading={completeUploading}
+                uploadedCount={completionFiles.length}
+                onPick={(files) =>
+                  void onPickFiles(files, setCompletionFiles, setCompleteUploading)
+                }
+              />
+              <AttachmentList
+                items={completionFiles}
+                onRemove={(id) =>
+                  setCompletionFiles((prev) => prev.filter((x) => x.id !== id))
+                }
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setCompleteOpen(false)}>
+              Bekor
+            </Button>
+            <Button
+              onClick={() => void handleComplete()}
+              disabled={completeTask.isPending}
+            >
+              <CheckCircle2 className="h-4 w-4 mr-1.5" />
+              Yuborish
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Ijrochi: muddat so'rovi */}
+      <Dialog open={extendOpen} onOpenChange={setExtendOpen}>
+        <DialogContent className="max-h-[92vh] overflow-y-auto border-border/80 bg-card p-0 sm:max-w-lg">
+          <div className="relative overflow-hidden rounded-t-lg bg-gradient-to-br from-[#0a2540] via-[#0b5fff] to-[#3dd6f5] px-5 pb-5 pt-6 text-white">
+            <div className="absolute -right-8 -top-10 h-32 w-32 rounded-full bg-white/10" />
+            <div className="absolute -bottom-10 left-8 h-24 w-24 rounded-full bg-[#0a2540]/25" />
+            <div className="absolute right-10 top-1/2 h-16 w-16 -translate-y-1/2 rounded-full bg-[#ffb020]/25 blur-xl" />
+            <DialogHeader className="relative space-y-2 text-left">
+              <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/20 shadow-sm ring-1 ring-white/30 backdrop-blur">
+                <CalendarClock className="h-5 w-5" />
+              </div>
+              <DialogTitle className="text-lg font-bold tracking-tight text-white drop-shadow-sm">
+                {t("tasks.extendDialog")}
+              </DialogTitle>
+              <DialogDescription className="text-sm font-medium text-white/95">
+                {t("tasks.extend.subtitle")}
+              </DialogDescription>
+          </DialogHeader>
+            {activeTask ? (
+              <div className="relative mt-3 rounded-xl border border-white/30 bg-[#061428]/55 px-3 py-2.5 backdrop-blur">
+                <p className="truncate text-sm font-semibold text-white">{activeTask.title}</p>
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-medium text-white/95">
+                  <span>TK-{activeTask.id}</span>
+                  <span className="opacity-60">·</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {t("tasks.deadline")}:{" "}
+                    {activeTask.dueAt
+                      ? new Date(activeTask.dueAt).toLocaleString("uz-UZ", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          year: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })
+                      : "—"}
+                  </span>
+                </p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="space-y-4 bg-card px-5 py-4 text-foreground">
+            <div className="space-y-2 rounded-xl border border-slate-200 bg-[#f4f7fb] p-3 dark:border-slate-600 dark:bg-slate-900">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-100">
+                {t("tasks.extend.quickPick")}
+              </p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {[
+                  { days: 1, label: t("tasks.extend.d1") },
+                  { days: 2, label: t("tasks.extend.d2") },
+                  { days: 3, label: t("tasks.extend.d3") },
+                  { days: 7, label: t("tasks.extend.d7") },
+                ].map((opt) => {
+                  const active = extendPresetDays === opt.days;
+                  return (
+                    <button
+                      key={opt.days}
+                      type="button"
+                      disabled={requestExtension.isPending}
+                      onClick={() => applyExtendPreset(opt.days)}
+                      className={cn(
+                        "rounded-xl border px-2.5 py-2.5 text-left transition",
+                        active
+                          ? "border-[#0b5fff] bg-[#eef4ff] ring-2 ring-[#0b5fff]/30 dark:bg-[#0b5fff]/25"
+                          : "border-slate-300 bg-white hover:border-[#0b5fff]/50 dark:border-slate-600 dark:bg-slate-950 dark:hover:border-[#5b9dff]/60",
+                      )}
+                    >
+                      <p className="text-[12px] font-bold text-[#0a2540] dark:text-white">{opt.label}</p>
+                      <p className="mt-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-300">
+                        +{opt.days} {t("tasks.extend.days")}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="relative pt-1">
+                <Label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-100">
+                  {t("tasks.newDeadline")}
+                </Label>
+                <div className="relative">
+                  <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#0b5fff]" />
+              <Input
+                type="datetime-local"
+                value={extendDue}
+                    disabled={requestExtension.isPending}
+                    onChange={(e) => {
+                      setExtendDue(e.target.value);
+                      setExtendPresetDays(null);
+                    }}
+                    className="h-11 rounded-xl border-[#0b5fff]/40 bg-white pl-10 font-medium text-slate-900 focus-visible:border-[#0b5fff] focus-visible:ring-[#0b5fff]/25 dark:border-slate-600 dark:bg-slate-950 dark:text-white"
+              />
+            </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-100">
+                {t("tasks.note")}
+              </Label>
+              <Textarea
+                value={extendNote}
+                disabled={requestExtension.isPending}
+                onChange={(e) => setExtendNote(e.target.value)}
+                rows={3}
+                placeholder={t("tasks.extend.notePh")}
+                className="min-h-[88px] resize-none rounded-xl border-slate-300 bg-white text-sm font-medium text-slate-900 placeholder:text-slate-500 focus-visible:border-[#0b5fff] focus-visible:ring-[#0b5fff]/25 dark:border-slate-600 dark:bg-slate-950 dark:text-white dark:placeholder:text-slate-400"
+              />
+            </div>
+
+            <div className="rounded-xl border border-[#0b5fff]/35 bg-[#eef4ff] px-3 py-2.5 text-[12px] font-medium leading-snug text-[#0a2540] dark:border-[#5b9dff]/45 dark:bg-[#102a4a] dark:text-white">
+              <SendHorizontal className="mr-1 inline h-3.5 w-3.5 text-[#0b5fff] dark:text-[#7eb6ff]" />
+              {t("tasks.extend.flowHint")}
+          </div>
+
+            <div className="flex gap-2 pb-1">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={requestExtension.isPending}
+                onClick={() => setExtendOpen(false)}
+                className="h-11 flex-1 rounded-xl border-slate-300 font-semibold"
+              >
+                {t("ui.cancel")}
+            </Button>
+            <Button
+                type="button"
+              onClick={() => void handleExtend()}
+                disabled={requestExtension.isPending || !extendDue}
+                className="h-11 flex-1 rounded-xl bg-gradient-to-r from-[#0a2540] to-[#0b5fff] text-sm font-bold text-white shadow-md shadow-[#0b5fff]/25 hover:opacity-95"
+            >
+                <Send className="mr-1.5 h-4 w-4" />
+                {t("tasks.extend.submit")}
+            </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function FileDropzone({
+  inputRef,
+  label,
+  title,
+  hint,
+  onPick,
+  uploading,
+  uploadedCount = 0,
+}: {
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  label: string;
+  title: string;
+  hint: string;
+  onPick: (files: FileList | null) => void;
+  uploading?: boolean;
+  uploadedCount?: number;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const success = !uploading && uploadedCount > 0;
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <label
+        onDragEnter={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDragging(true);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDragging(true);
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDragging(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDragging(false);
+          if (!uploading) onPick(e.dataTransfer.files);
+        }}
+        className={cn(
+          "flex cursor-pointer items-center gap-3 rounded-xl border border-dashed px-4 py-3.5 transition-colors",
+          uploading && "pointer-events-none opacity-80 border-sky-400 bg-sky-50",
+          !uploading &&
+            dragging &&
+            "border-primary bg-primary/5",
+          !uploading &&
+            success &&
+            "border-emerald-500 bg-emerald-50 hover:border-emerald-600 hover:bg-emerald-50/90",
+          !uploading &&
+            !success &&
+            !dragging &&
+            "border-slate-300 bg-muted/80 hover:border-primary/50 hover:bg-muted",
+        )}
+      >
+        <span
+          className={cn(
+            "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-foreground dark:text-white",
+            success ? "bg-emerald-600" : uploading ? "bg-sky-600" : "bg-muted dark:bg-slate-800",
+          )}
+        >
+          {success ? (
+            <CheckCircle2 className="h-5 w-5" />
+          ) : (
+            <FileText className="h-5 w-5" />
+          )}
+        </span>
+        <span className="min-w-0 text-left">
+          <span
+            className={cn(
+              "block text-sm font-semibold",
+              success ? "text-emerald-800" : "text-foreground",
+            )}
+          >
+            {uploading
+              ? "Yuklanmoqda..."
+              : success
+                ? `${uploadedCount} ta fayl yuklandi`
+                : title}
+          </span>
+          <span
+            className={cn(
+              "mt-0.5 block text-xs",
+              success ? "text-emerald-700" : "text-muted-foreground",
+            )}
+          >
+            {uploading
+              ? "Kuting, fayl serverga yuborilmoqda"
+              : success
+                ? "Yana qo‘shish uchun bosing yoki tortib tashlang"
+                : hint}
+          </span>
+        </span>
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,application/pdf"
+          className="sr-only"
+          disabled={uploading}
+          onChange={(e) => {
+            onPick(e.target.files);
+            e.target.value = "";
+          }}
+        />
+      </label>
+    </div>
+  );
+}
+
+function AttachmentList({
+  items,
+  onRemove,
+  readOnly,
+}: {
+  items: TaskAttachment[];
+  onRemove?: (id: string) => void;
+  readOnly?: boolean;
+}) {
+  if (!items.length) return null;
+
+  const downloadHref = (url: string) => {
+    if (url.startsWith("/api/uploads/")) {
+      return url.includes("?") ? `${url}&download=1` : `${url}?download=1`;
+    }
+    return url;
+  };
+
+  const onDownload = async (a: TaskAttachment) => {
+    try {
+      const { deliverFileFromUrl, isTelegramMiniApp } = await import("@/lib/tg-download");
+      if (isTelegramMiniApp()) {
+        await deliverFileFromUrl(a.url, a.name);
+        return;
+      }
+      window.open(downloadHref(a.url), "_blank", "noopener,noreferrer");
+    } catch (err) {
+      console.error(err);
+      window.open(downloadHref(a.url), "_blank", "noopener,noreferrer");
+    }
+  };
+
+  return (
+    <ul className="space-y-1.5">
+      {items.map((a) => (
+        <li
+          key={a.id}
+          className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 text-sm"
+        >
+          {a.kind === "image" ? (
+            <a href={a.url} target="_blank" rel="noreferrer" className="shrink-0">
+              <img
+                src={a.url}
+                alt=""
+                className="h-8 w-8 rounded object-cover"
+              />
+            </a>
+          ) : (
+            <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+          <span className="truncate flex-1" title={a.name}>
+            {a.name}
+          </span>
+          <button
+            type="button"
+            onClick={() => void onDownload(a)}
+            className="shrink-0 rounded-md border bg-card px-2 py-1 text-xs font-medium text-foreground hover:bg-muted"
+          >
+            Yuklab olish
+          </button>
+          {!readOnly && onRemove && (
+            <button
+              type="button"
+              className="p-1 text-muted-foreground hover:text-red-600"
+              onClick={() => onRemove(a.id)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function TaskCard({
+  task,
+  column,
+  overdue,
+  isCreator,
+  isAssignee,
+  canApprove,
+  canDelete,
+  selectMode,
+  selected,
+  canSelect,
+  onToggleSelect,
+  onOpen,
+  onComplete,
+  onExtend,
+  onDelete,
+  onApproveExt,
+  onRejectExt,
+  onVerify,
+  onOpenReturn,
+  onAccept,
+}: {
+  task: Vazifa;
+  column: BoardCol;
+  overdue?: boolean;
+  isCreator: boolean;
+  isAssignee: boolean;
+  canApprove: boolean;
+  canDelete: boolean;
+  selectMode?: boolean;
+  selected?: boolean;
+  canSelect?: boolean;
+  onToggleSelect?: () => void;
+  onOpen: () => void;
+  onComplete: () => void;
+  onExtend: () => void;
+  onDelete: () => void;
+  onApproveExt: () => void;
+  onRejectExt: () => void;
+  onVerify: () => void;
+  onOpenReturn: () => void;
+  onAccept: () => void;
+}) {
+  const { t } = useI18n();
+  const priClass = PRIORITY_CLASS[task.priority] || PRIORITY_CLASS.normal;
+  const priLabel = t(PRIORITY_KEYS[task.priority] || PRIORITY_KEYS.normal!);
+  const files = task.attachments?.filter((a) => a.kind === "file" || a.kind === "image") ?? [];
+  const pendingExt = task.extensionStatus === "pending";
+  const awaitingReview = task.status === "done";
+  const isVerified = task.status === "verified";
+  const needsAccept = task.status === "todo";
+  const isAccepted = task.status === "in_progress";
+  const assigneeFrozen = Boolean(overdue && isAssignee && !isCreator && !awaitingReview && !isVerified);
+  const progress = checklistProgress(task);
+  const typeLbl = taskTypeLabel(task.meta?.taskType, t);
+  const tag = Array.isArray(task.meta?.tags) && task.meta!.tags!.length > 0 ? task.meta!.tags![0] : typeLbl;
+  const msgCount = Array.isArray(task.meta?.messages) ? task.meta!.messages!.length : 0;
+  const initials = initialsFromName(task.assigneeName);
+  const reworkCount = Number(task.meta?.reworkCount || 0);
+  const prevSubs = Array.isArray(task.meta?.submissionHistory)
+    ? task.meta!.submissionHistory!
+    : [];
+  const lastArchived = prevSubs.length > 0 ? prevSubs[prevSubs.length - 1] : null;
+  const lastAuditorMsg = Array.isArray(task.meta?.messages)
+    ? [...task.meta!.messages!].reverse().find((m) => m.authorRole === "auditor")
+    : undefined;
+
+  return (
+    <article
+      className={cn(
+        "group relative cursor-pointer overflow-hidden rounded-xl border border-border/80 bg-card p-3 pl-3.5 shadow-[0_1px_2px_rgba(15,39,68,0.05)] transition-all duration-200",
+        "hover:-translate-y-0.5 hover:border-border hover:shadow-[0_10px_24px_-14px_rgba(15,39,68,0.35)] dark:shadow-black/20",
+        overdue && !awaitingReview && !isVerified && "border-rose-300/80 dark:border-rose-500/40",
+        needsAccept && isAssignee && "border-sky-400/80 dark:border-sky-500/40",
+        awaitingReview && "border-violet-300/80 dark:border-violet-500/40",
+        isVerified && "border-emerald-300/80 dark:border-emerald-500/40",
+        pendingExt && "border-amber-400/80 dark:border-amber-500/40",
+        selectMode && selected && "border-rose-400 ring-1 ring-rose-400/40 dark:border-rose-500",
+        selectMode && !canSelect && "opacity-50",
+      )}
+      onClick={onOpen}
+    >
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-y-0 left-0 w-[3px]",
+          COLUMNS.find((c) => c.id === column)?.accentDot ?? "bg-primary",
+        )}
+      />
+      {selectMode ? (
+        <button
+          type="button"
+          className={cn(
+            "absolute left-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded-md border bg-card shadow-sm",
+            selected
+              ? "border-rose-500 bg-rose-500 text-white"
+              : "border-border text-muted-foreground",
+            !canSelect && "pointer-events-none opacity-40",
+          )}
+          disabled={!canSelect}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSelect?.();
+          }}
+          aria-label={t("ui.delete")}
+        >
+          {selected ? (
+            <Check className="h-3 w-3" strokeWidth={3} />
+          ) : (
+            <span className="h-2 w-2 rounded-sm" />
+          )}
+        </button>
+      ) : null}
+      {isVerified && !selectMode && (
+        <span className="absolute right-2.5 top-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm">
+          <Check className="h-3 w-3" strokeWidth={3} />
+        </span>
+      )}
+
+      <div className={cn("mb-2 flex flex-wrap items-center gap-1.5", selectMode ? "pl-6 pr-1" : "pr-6")}>
+        <span
+          className={cn(
+            "inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-bold",
+            priClass,
+          )}
+        >
+          <Flag className="mr-0.5 h-2.5 w-2.5" />
+          {priLabel}
+        </span>
+        {tag ? (
+          <span className="inline-flex items-center gap-0.5 rounded-md border border-border/70 bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            <Folder className="h-2.5 w-2.5 opacity-70" />
+            {tag}
+          </span>
+        ) : null}
+        {Number(task.meta?.batchSize || 0) > 1 ? (
+          <span className="inline-flex items-center gap-0.5 rounded-md border border-teal-300/70 bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-800 dark:border-teal-700/50 dark:bg-teal-950/40 dark:text-teal-200">
+            <Users className="h-2.5 w-2.5" />
+            {task.meta!.batchSize}
+          </span>
+        ) : null}
+      </div>
+
+      <h3 className="mb-1 text-[13px] font-bold leading-snug text-foreground">{task.title}</h3>
+
+      {task.description ? (
+        <p className="mb-2 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+          {htmlDescToPlain(task.description)}
+        </p>
+      ) : null}
+
+      {needsAccept ? (
+        <AcceptWindowCountdown task={task} compact className="mb-2" />
+      ) : null}
+
+      {lastAuditorMsg && !isVerified ? (
+        <div className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-950 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-100">
+          <p className="flex items-center gap-1 font-bold">
+            <AlertTriangle className="h-3 w-3" /> HR Auditordan xabar
+          </p>
+          <p className="mt-0.5 line-clamp-2">{lastAuditorMsg.text || lastAuditorMsg.attachment?.name || "📎"}</p>
+        </div>
+      ) : null}
+
+      {task.candidateId && task.pipelineStage && (
+        <a
+          href={
+            task.pipelineStage === "hired"
+              ? `/candidates/${task.candidateId}`
+              : `/candidates/${task.candidateId}/${
+                  task.pipelineStage === "offline_interview"
+                    ? "offline-interview"
+                    : task.pipelineStage === "final_decision"
+                      ? "final-decision"
+                      : task.pipelineStage
+                }`
+          }
+          className="mb-1.5 inline-flex text-[10px] font-medium text-primary hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Nomzod formasini ochish →
+        </a>
+      )}
+
+        <div
+          className={cn(
+          "mb-2 flex items-center gap-1.5 text-[11px]",
+          dueDateToneClass(task.dueAt, task.status),
+        )}
+      >
+        <Calendar className="h-3 w-3 shrink-0" />
+        <span>{task.dueAt ? formatDate(task.dueAt) : t("tasks.noDue")}</span>
+          </div>
+
+      {(column === "progress" || isAccepted || column === "today") &&
+        !awaitingReview &&
+        !isVerified && (
+          <div className="mb-2.5">
+            <div className="mb-1 flex items-center justify-between text-[10px] font-semibold text-muted-foreground">
+              <span>{t("tasks.progress")}</span>
+              <span className="tabular-nums text-primary">{progress}%</span>
+        </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${progress}%` }}
+              />
+        </div>
+        </div>
+      )}
+
+      {(awaitingReview || isVerified) &&
+        (task.completionNote || (task.completionAttachments?.length ?? 0) > 0) && (
+          <div className="mb-2 rounded-lg border border-emerald-200/80 bg-emerald-50/80 px-2 py-1 text-[10px] text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
+            <span className="font-semibold">{t("tasks.result")} </span>
+          {task.completionNote
+            ? task.completionNote.slice(0, 60) +
+              (task.completionNote.length > 60 ? "…" : "")
+            : `${task.completionAttachments.length} ta fayl`}
+        </div>
+      )}
+
+      {!awaitingReview &&
+      !isVerified &&
+      (task.meta?.lastReworkNote || lastArchived) ? (
+        <div className="mb-2 space-y-1.5">
+          {lastArchived?.note ? (
+            <div className="rounded-lg border border-emerald-300/60 bg-emerald-50/70 px-2 py-1.5 text-[10px] text-emerald-950 dark:border-emerald-700/40 dark:bg-emerald-950/30 dark:text-emerald-100">
+              <span className="font-semibold">{t("tasks.return.history")}: </span>
+              {String(lastArchived.note).slice(0, 80)}
+              {String(lastArchived.note).length > 80 ? "…" : ""}
+            </div>
+          ) : null}
+          {task.meta?.lastReworkNote ? (
+            <div className="rounded-lg border border-amber-300/70 bg-amber-50/80 px-2 py-1.5 text-[10px] text-amber-950 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-100">
+              <span className="font-semibold">{t("tasks.rework")}: </span>
+              {String(task.meta.lastReworkNote).slice(0, 90)}
+              {String(task.meta.lastReworkNote).length > 90 ? "…" : ""}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {pendingExt && (
+        <div className="mb-2 rounded-lg border border-amber-200/80 bg-amber-50 px-2 py-1 text-[10px] text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          Muddat so‘ralgan: {formatDate(task.extensionRequestedDueAt)}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 border-t border-border/60 pt-2">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[9px] font-bold text-primary-foreground">
+          {initials || "?"}
+            </span>
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-foreground">
+          {task.assigneeName || "—"}
+          {Array.isArray(task.meta?.assigneeHistory) &&
+          task.meta!.assigneeHistory!.length > 0 ? (
+            <span className="ml-1 font-normal text-muted-foreground">
+              · {t("tasks.transferredFrom")}:{" "}
+              {task.meta!.assigneeHistory![task.meta!.assigneeHistory!.length - 1]?.name}
+            </span>
+          ) : null}
+        </span>
+        <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+          <MessageSquare className="h-3 w-3" />
+          {msgCount}
+        </span>
+        <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+              <Paperclip className="h-3 w-3" />
+          {files.length + (task.completionAttachments?.length ?? 0)}
+            </span>
+        <span className="text-[10px] font-medium tabular-nums text-muted-foreground/50">
+          TK-{task.id}
+        </span>
+        </div>
+
+      {assigneeFrozen ? (
+        <p className="mt-2 w-full rounded-md bg-rose-500/15 px-2 py-1.5 text-center text-[10px] font-bold text-rose-700 ring-1 ring-rose-300/60 dark:bg-rose-950/50 dark:text-rose-300 dark:ring-rose-700/50">
+          {task.status === "todo" && !task.acceptedAt
+            ? "Qabul qilinmadi — faqat ko‘rish"
+            : "Vaqt tugagan — o‘zgartirish yopiq"}
+        </p>
+      ) : null}
+
+      {(() => {
+        const showAccept = isAssignee && needsAccept && !assigneeFrozen;
+        const showProgress = isAssignee && isAccepted && !assigneeFrozen;
+        const showApprove = canApprove && awaitingReview;
+        const showExtReview = isCreator && pendingExt;
+        const showExtend = isCreator && overdue && !awaitingReview && !isVerified;
+        const hasActions = showAccept || showProgress || showApprove || showExtReview || showExtend || canDelete;
+        if (!hasActions) return null;
+        return (
+      <div
+        className="mt-2 flex flex-wrap gap-1 border-t border-border/40 pt-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {showAccept && (
+          <button
+            type="button"
+            className="flex-1 rounded-md bg-primary py-1.5 text-[11px] font-semibold text-primary-foreground hover:opacity-90"
+            onClick={onAccept}
+          >
+            {t("tasks.accept")}
+          </button>
+        )}
+        {showProgress && (
+          <>
+            <button
+              type="button"
+              className="flex flex-1 items-center justify-center gap-1 rounded-md py-1.5 text-[11px] text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+              onClick={onComplete}
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {t("tasks.markDone")}
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-[11px] text-amber-800 hover:bg-amber-500/10 dark:text-amber-300"
+              onClick={onExtend}
+            >
+              <Clock className="h-3.5 w-3.5" />
+              {t("tasks.deadline")}
+            </button>
+          </>
+        )}
+        {showApprove && (
+            <button
+              type="button"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md bg-emerald-600 py-2 text-[12px] font-bold text-white shadow-sm hover:bg-emerald-700"
+            onClick={() => {
+              startTransition(() => {
+                onVerify();
+              });
+            }}
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            Tasdiqlash
+            </button>
+        )}
+        {showApprove && (
+            <button
+              type="button"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md bg-gradient-to-r from-[#0a2540]/10 to-[#0b5fff]/15 py-2 text-[11px] font-bold text-[#0a2540] ring-1 ring-[#0b5fff]/35 hover:from-[#0a2540]/15 hover:to-[#0b5fff]/25 dark:text-sky-100 dark:ring-[#0b5fff]/40"
+            onClick={onOpenReturn}
+            >
+            <RotateCcw className="h-3.5 w-3.5" />
+              {t("tasks.rework")}
+            {reworkCount > 0 ? ` · ${reworkCount}` : ""}
+            </button>
+        )}
+        {showExtReview && (
+          <>
+            <button
+              type="button"
+              className="flex-1 rounded-md py-1.5 text-[11px] text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+              onClick={onApproveExt}
+            >
+              {t("ui.approve")}
+            </button>
+            <button
+              type="button"
+              className="flex-1 rounded-md py-1.5 text-[11px] text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
+              onClick={onRejectExt}
+            >
+              {t("tasks.rejectExt")}
+            </button>
+          </>
+        )}
+        {showExtend && (
+          <button
+            type="button"
+            className="flex w-full items-center justify-center gap-1 rounded-md border border-amber-300/80 bg-amber-50 py-1.5 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+            onClick={onOpen}
+          >
+            <Clock className="h-3.5 w-3.5" />
+            Muddatni cho‘zish
+          </button>
+        )}
+        {canDelete && !selectMode && (
+          <button
+            type="button"
+            className="ml-auto rounded-md p-1.5 text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            title={t("ui.delete")}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+        );
+      })()}
+    </article>
+  );
+}
+

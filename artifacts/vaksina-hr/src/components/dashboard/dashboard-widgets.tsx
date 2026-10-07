@@ -1,0 +1,438 @@
+import React from 'react';
+import { Link } from 'wouter';
+import { ArrowRight, ChevronRight } from 'lucide-react';
+import { cn } from '../../lib/utils';
+import { Skeleton } from '../ui/skeleton';
+import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
+import type { HolatMudirNode, HolatPerson, HolatReport } from '../../lib/holat-api';
+import type { StaffingAlert } from '../../lib/staffing-api';
+import { displayBranchName } from '../../lib/pharmacy-staff-api';
+
+export function flattenHolatTree(holat?: HolatReport) {
+  const mudirs: HolatMudirNode[] = [];
+  const pharmacists: HolatPerson[] = [];
+  const interns: HolatPerson[] = [];
+  for (const c of holat?.coordinators ?? []) {
+    for (const m of c.mudirs) {
+      mudirs.push(m);
+      for (const s of m.staff) {
+        const role = s.orgRole || s.loginRole || '';
+        if (role === 'farmasevt') pharmacists.push(s);
+        else if (role === 'stajyor') interns.push(s);
+      }
+    }
+  }
+  return { mudirs, pharmacists, interns };
+}
+
+export function WorkHomeHeader({
+  title,
+  name,
+  roleLabel,
+  hint,
+  primaryHref,
+  primaryLabel,
+  primaryIcon: PrimaryIcon,
+}: {
+  title: string;
+  name?: string | null;
+  roleLabel?: string | null;
+  hint?: string;
+  primaryHref?: string;
+  primaryLabel?: string;
+  primaryIcon?: React.ComponentType<{ className?: string }>;
+}) {
+  return (
+    <header className="relative overflow-hidden rounded-2xl border border-[#0B3A5C]/15 bg-gradient-to-br from-[#071E33] via-[#0B3A5C] to-[#145A8A] px-4 py-5 text-white shadow-md sm:px-6 sm:py-6">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.12]"
+        style={{
+          backgroundImage:
+            "radial-gradient(circle at 12% 20%, #fff 0.6px, transparent 0.7px), radial-gradient(circle at 80% 70%, #fff 0.5px, transparent 0.6px)",
+          backgroundSize: "18px 18px, 22px 22px",
+        }}
+      />
+      <div className="relative flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0 space-y-1.5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-sky-200/90">
+            Mening ishim
+          </p>
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
+          <p className="flex flex-wrap items-center gap-2 text-sm text-sky-100/90">
+            {name ? <span className="font-medium text-white">{name}</span> : null}
+            {roleLabel ? (
+              <span className="rounded-full bg-white/15 px-2.5 py-0.5 text-xs font-medium backdrop-blur">
+                {roleLabel}
+              </span>
+            ) : null}
+          </p>
+          {hint ? <p className="max-w-xl text-xs leading-relaxed text-sky-100/75 sm:text-sm">{hint}</p> : null}
+        </div>
+        {primaryHref && primaryLabel ? (
+          <Link href={primaryHref}>
+            <Button
+              type="button"
+              className="h-11 w-full gap-2 bg-white text-[#0B3A5C] hover:bg-sky-50 sm:w-auto"
+            >
+              {PrimaryIcon ? <PrimaryIcon className="h-4 w-4" /> : null}
+              {primaryLabel}
+            </Button>
+          </Link>
+        ) : null}
+      </div>
+    </header>
+  );
+}
+
+export function WorkPanel({
+  title,
+  href,
+  hrefLabel = "Barchasi",
+  children,
+  empty,
+  loading,
+}: {
+  title: string;
+  href?: string;
+  hrefLabel?: string;
+  children?: React.ReactNode;
+  empty?: string;
+  loading?: boolean;
+}) {
+  const hasKids = React.Children.count(children) > 0;
+  return (
+    <section className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+      <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-3">
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        {href ? (
+          <Link href={href} className="text-xs font-medium text-[#0B3A5C] hover:underline dark:text-sky-400">
+            {hrefLabel} →
+          </Link>
+        ) : null}
+      </div>
+      <div className="p-3 sm:p-4">
+        {loading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ) : hasKids ? (
+          <div className="space-y-2">{children}</div>
+        ) : (
+          <p className="py-8 text-center text-sm text-muted-foreground">{empty || "Hozircha bo‘sh"}</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function DashTile({
+  title,
+  value,
+  icon: Icon,
+  loading,
+  color = 'text-muted-foreground',
+  accent = 'bg-slate-100',
+  onClick,
+  hint,
+  active,
+}: {
+  title: string;
+  value?: number | string;
+  icon: React.ComponentType<{ className?: string }>;
+  loading?: boolean;
+  color?: string;
+  accent?: string;
+  onClick?: () => void;
+  hint?: string;
+  active?: boolean;
+}) {
+  const Tag = onClick ? 'button' : 'div';
+  return (
+    <Tag
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      className={cn(
+        'group relative flex min-h-[96px] flex-col justify-between rounded-2xl border bg-card p-3.5 text-left shadow-sm transition',
+        onClick && 'cursor-pointer hover:border-[#0B3A5C]/35 hover:shadow-md active:scale-[0.99] dark:hover:border-sky-400/40',
+        active && 'border-[#0B3A5C]/50 ring-1 ring-[#0B3A5C]/20 dark:border-sky-400/50',
+      )}
+    >
+      <div className="flex items-start justify-between gap-1.5">
+        <span className={cn('rounded-xl p-2 shrink-0 dark:bg-white/[0.08]', accent)}>
+          <Icon className={cn('h-4 w-4', color)} />
+        </span>
+        {onClick ? (
+          <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition group-hover:text-[#0B3A5C]" />
+        ) : null}
+      </div>
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground line-clamp-2">{title}</p>
+        {loading ? (
+          <Skeleton className="mt-1.5 h-7 w-14" />
+        ) : (
+          <p className="mt-1 text-2xl font-bold tabular-nums tracking-tight text-foreground">{value ?? '—'}</p>
+        )}
+        {hint ? <p className="mt-0.5 text-[11px] text-muted-foreground line-clamp-1">{hint}</p> : null}
+      </div>
+    </Tag>
+  );
+}
+
+export function DashActionBar({
+  items,
+}: {
+  items: Array<{
+    href: string;
+    title: string;
+    desc?: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }>;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      {items.map(({ href, title, desc, icon: Icon }) => (
+        <Link key={href + title} href={href}>
+          <div className="flex h-full items-center gap-2.5 rounded-xl border bg-card px-3 py-2.5 transition hover:border-primary/35 hover:shadow-sm cursor-pointer dark:hover:border-sky-400/35 dark:hover:bg-slate-800/70">
+            <span className="rounded-lg bg-muted p-2 text-foreground shrink-0 dark:bg-sky-500/15 dark:text-sky-300">
+              <Icon className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-foreground">{title}</p>
+              {desc ? <p className="truncate text-[11px] text-muted-foreground">{desc}</p> : null}
+            </div>
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+export function DashListRow({
+  title,
+  subtitle,
+  badge,
+  onClick,
+}: {
+  title: string;
+  subtitle?: string;
+  badge?: React.ReactNode;
+  onClick?: () => void;
+}) {
+  const Tag = onClick ? 'button' : 'div';
+  return (
+    <Tag
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center justify-between gap-3 rounded-lg border bg-card px-3 py-2.5 text-left',
+        onClick && 'cursor-pointer hover:bg-muted',
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-foreground">{title}</p>
+        {subtitle ? <p className="truncate text-xs text-muted-foreground">{subtitle}</p> : null}
+      </div>
+      {badge ? <div className="shrink-0">{badge}</div> : null}
+    </Tag>
+  );
+}
+
+export function DashDetailDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  href,
+  hrefLabel = 'Batafsil ochish',
+  children,
+  emptyText = "Ma'lumot yo'q",
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  title: string;
+  description?: string;
+  href?: string;
+  hrefLabel?: string;
+  children?: React.ReactNode;
+  emptyText?: string;
+}) {
+  const hasContent = React.Children.count(children) > 0;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          {description ? <DialogDescription>{description}</DialogDescription> : null}
+        </DialogHeader>
+        <div className="max-h-[min(52vh,420px)] space-y-2 overflow-y-auto pr-1">
+          {hasContent ? children : <p className="py-8 text-center text-sm text-muted-foreground">{emptyText}</p>}
+        </div>
+        {href ? (
+          <DialogFooter>
+            <Link href={href}>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => onOpenChange(false)}>
+                {hrefLabel} <ArrowRight className="h-4 w-4" />
+              </Button>
+            </Link>
+          </DialogFooter>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function PersonListRows({ people }: { people: HolatPerson[] }) {
+  if (!people.length) return null;
+  return (
+    <>
+      {people.map((p) => (
+        <DashListRow
+          key={`${p.employeeId ?? p.userId}-${p.fullName}`}
+          title={p.fullName}
+          subtitle={[p.branch, p.phone, p.orgRoleLabel || p.loginRoleLabel].filter(Boolean).join(' · ')}
+          badge={
+            p.login ? (
+              <Badge variant="outline" className="text-[10px] font-normal">
+                {p.login}
+              </Badge>
+            ) : undefined
+          }
+        />
+      ))}
+    </>
+  );
+}
+
+export function MudirListRows({ mudirs }: { mudirs: HolatMudirNode[] }) {
+  if (!mudirs.length) return null;
+  return (
+    <>
+      {mudirs.map((m) => (
+        <DashListRow
+          key={m.employeeId ?? m.fullName}
+          title={m.fullName}
+          subtitle={`${m.branch} · Farmasevt: ${m.pharmacistCount} · Stajyor: ${m.internCount}`}
+          badge={
+            m.phone ? (
+              <Badge variant="secondary" className="text-[10px] font-normal">
+                {m.phone}
+              </Badge>
+            ) : undefined
+          }
+        />
+      ))}
+    </>
+  );
+}
+
+export function BranchListRows({
+  branches,
+}: {
+  branches: HolatReport['branchesWithoutStaff'];
+}) {
+  if (!branches?.length) return null;
+  return (
+    <>
+      {branches.map((b) => (
+        <DashListRow
+          key={`${b.branch}-${b.mudirEmployeeId}`}
+          title={b.branch}
+          subtitle={[b.mudirName, b.coordinatorName].filter(Boolean).join(' · ')}
+          badge={<Badge className="bg-amber-100 text-amber-900 hover:bg-amber-100 text-[10px]">Jamoa yo‘q</Badge>}
+        />
+      ))}
+    </>
+  );
+}
+
+export function StaffingAlertRows({ alerts }: { alerts: StaffingAlert[] }) {
+  if (!alerts.length) return null;
+  return (
+    <>
+      {alerts.map((a) => (
+        <DashListRow
+          key={a.id}
+          title={`${displayBranchName(a.branchLocation) || 'Filial'} · ${a.employmentStatusLabel}`}
+          subtitle={[a.shiftLabel || a.shiftType, a.employeeName].filter(Boolean).join(' · ')}
+          badge={<Badge className="bg-red-100 text-red-800 hover:bg-red-100 text-[10px]">Kutilmoqda</Badge>}
+        />
+      ))}
+    </>
+  );
+}
+
+export function NeedListRows({ needs }: { needs: any[] }) {
+  if (!needs.length) return null;
+  return (
+    <>
+      {needs.map((n) => (
+        <DashListRow
+          key={n.id}
+          title={n.needType || n.title || 'Ehtiyoj'}
+          subtitle={[displayBranchName(n.branchLocation || n.branch) || null, n.status].filter(Boolean).join(' · ')}
+        />
+      ))}
+    </>
+  );
+}
+
+export function TaskListRows({ tasks }: { tasks: any[] }) {
+  if (!tasks.length) return null;
+  return (
+    <>
+      {tasks.map((t) => (
+        <DashListRow
+          key={t.id}
+          title={t.title || t.description}
+          subtitle={[t.status === 'in_progress' ? 'Jarayonda' : 'Yangi', t.dueAt ? new Date(t.dueAt).toLocaleDateString('uz-UZ') : '']
+            .filter(Boolean)
+            .join(' · ')}
+        />
+      ))}
+    </>
+  );
+}
+
+export function ReminderListRows({ reminders }: { reminders: any[] }) {
+  if (!reminders.length) return null;
+  return (
+    <>
+      {reminders.map((r) => (
+        <DashListRow
+          key={r.id}
+          title={r.title || r.text || 'Eslatma'}
+          subtitle={r.dueAt ? new Date(r.dueAt).toLocaleDateString('uz-UZ') : r.status}
+        />
+      ))}
+    </>
+  );
+}
+
+export function ChatListRows({ chats }: { chats: Array<{ id: number; title?: string; name?: string; unreadCount?: number }> }) {
+  if (!chats.length) return null;
+  return (
+    <>
+      {chats.map((c) => (
+        <DashListRow
+          key={c.id}
+          title={c.title || c.name || `Chat #${c.id}`}
+          badge={
+            (c.unreadCount ?? 0) > 0 ? (
+              <Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100">{c.unreadCount}</Badge>
+            ) : undefined
+          }
+        />
+      ))}
+    </>
+  );
+}

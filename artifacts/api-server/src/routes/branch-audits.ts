@@ -1,0 +1,2091 @@
+import { Router, type IRouter } from "express";
+import { desc, eq, and, inArray, isNull } from "drizzle-orm";
+import ExcelJS from "exceljs";
+import {
+  db,
+  branchAuditsTable,
+  employeesTable,
+  usersTable,
+  coordinatorBranchVisitsTable,
+  type AuditCategory,
+  type AuditChecklistItem,
+} from "@workspace/db";
+import type { AuthRequest } from "../middlewares/auth";
+import { requireAuth } from "../middlewares/auth";
+import {
+  HR_ROLES,
+  canExportChecklistStatus,
+  canViewChecklistStatus,
+  canViewCoordinatorRanking,
+  canViewPharmacyReyting,
+  hasFullPlatformAccess,
+  isDirectorRole,
+  isPharmacyBranchRole,
+} from "../lib/roles";
+import { gpsFromLocationField, displayBranchName } from "../lib/geo-location";
+import { dedupeActiveBranches } from "../lib/branch-dedupe";
+import { checklistFrom, isOnOrAfterChecklistEpoch, CHECKLIST_EPOCH } from "../lib/checklist-epoch";
+import {
+  assertChecklistAllowedForCoordinator,
+  assertInBranchGeofence,
+  attachChecklistToOpenVisit,
+  approvePresenceUnlock,
+  confirmCoordinatorPresence,
+  COORD_OFFICE_BRANCH_ID,
+  COORD_OFFICE_LABEL,
+  COORD_VISIT_GEOFENCE_METERS,
+  finishCoordinatorVisitWithNote,
+  adminForceCloseCoordinatorVisit,
+  getOpenCoordinatorVisit,
+  isCoordinatorOfficeVisit,
+  listCoordinatorVisits,
+  requestPresenceUnlock,
+  serializeVisit,
+  startCoordinatorVisit,
+  formatDurationMinutes,
+  isVisitPresenceBlocked,
+} from "../lib/coordinator-visits";
+import {
+  isTestOfficeCoordinatorUserId,
+  maybePurgeTestCoordinatorAfterVisit,
+  TEST_COORD_MAX_VISITS,
+  TEST_OFFICE_LAT,
+  TEST_OFFICE_LNG,
+} from "../lib/test-office-coordinator";
+
+const router: IRouter = Router();
+
+const VIEW_ROLES = new Set([
+  "koordinator",
+  "admin",
+  ...HR_ROLES,
+  "director", "asoschi",
+  "recruiter",
+  "mudir",
+  "farmasevt",
+  "stajyor",
+  "moliya",
+]);
+const WRITE_ROLES = new Set(["koordinator", "admin"]);
+
+/** Koordinator filialga 70 m dan yaqin bo‘lishi shart */
+export const AUDIT_GEOFENCE_METERS = 70;
+
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+function requireRole(req: AuthRequest, roles: Set<string>): boolean {
+  return !!req.userRole && roles.has(req.userRole);
+}
+
+function flattenItems(categories: AuditCategory[]): AuditChecklistItem[] {
+  return categories.flatMap((c) => c.items || []);
+}
+
+function computeScore(categories: AuditCategory[]) {
+  const items = flattenItems(categories);
+  const total = items.length;
+  const yes = items.filter((i) => i.answer === "yes").length;
+  const no = items.filter((i) => i.answer === "no").length;
+  const answered = yes + no;
+  const scorePercent = answered === 0 ? 0 : Math.round((yes / answered) * 100);
+  return { totalCount: total, yesCount: yes, noCount: no, answeredCount: answered, scorePercent };
+}
+
+function sanitizeCategories(raw: unknown): AuditCategory[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((cat: any, ci: number) => ({
+    id: String(cat?.id || `cat-${ci}`),
+    title: String(cat?.title || "Bo'lim").slice(0, 200),
+    items: Array.isArray(cat?.items)
+      ? cat.items.map((it: any, ii: number) => ({
+          id: String(it?.id || `item-${ci}-${ii}`),
+          label: String(it?.label || "Talab").slice(0, 300),
+          answer:
+            it?.answer === "yes" || it?.answer === "no" ? (it.answer as "yes" | "no") : null,
+          note: it?.note ? String(it.note).slice(0, 500) : null,
+        }))
+      : [],
+  }));
+}
+
+async function enrich(row: typeof branchAuditsTable.$inferSelect) {
+  const [visit] = await db
+    .select({
+      checkoutNote: coordinatorBranchVisitsTable.checkoutNote,
+      checkOutAt: coordinatorBranchVisitsTable.checkOutAt,
+    })
+    .from(coordinatorBranchVisitsTable)
+    .where(eq(coordinatorBranchVisitsTable.checklistAuditId, row.id))
+    .limit(1);
+
+  let checkoutNote = visit?.checkoutNote ?? null;
+  if (!checkoutNote) {
+    const [byKey] = await db
+      .select({ checkoutNote: coordinatorBranchVisitsTable.checkoutNote })
+      .from(coordinatorBranchVisitsTable)
+      .where(
+        and(
+          eq(coordinatorBranchVisitsTable.coordinatorUserId, row.coordinatorId),
+          eq(coordinatorBranchVisitsTable.branchId, row.managerEmployeeId),
+          eq(coordinatorBranchVisitsTable.workDate, row.visitDate),
+        ),
+      )
+      .orderBy(desc(coordinatorBranchVisitsTable.id))
+      .limit(1);
+    checkoutNote = byKey?.checkoutNote ?? null;
+  }
+
+  return {
+    ...row,
+    branchLocation: displayBranchName(row.branchLocation) || row.branchLocation,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    checkoutNote,
+    visitCheckOutAt: visit?.checkOutAt ? visit.checkOutAt.toISOString() : null,
+  };
+}
+
+async function enrichMany(rows: Array<typeof branchAuditsTable.$inferSelect>) {
+  if (!rows.length) return [];
+  const ids = rows.map((r) => r.id);
+  const visits = await db
+    .select({
+      checklistAuditId: coordinatorBranchVisitsTable.checklistAuditId,
+      coordinatorUserId: coordinatorBranchVisitsTable.coordinatorUserId,
+      branchId: coordinatorBranchVisitsTable.branchId,
+      workDate: coordinatorBranchVisitsTable.workDate,
+      checkoutNote: coordinatorBranchVisitsTable.checkoutNote,
+      checkOutAt: coordinatorBranchVisitsTable.checkOutAt,
+      checkInAt: coordinatorBranchVisitsTable.checkInAt,
+    })
+    .from(coordinatorBranchVisitsTable)
+    .where(inArray(coordinatorBranchVisitsTable.checklistAuditId, ids));
+
+  const byAudit = new Map(
+    visits
+      .filter((v) => v.checklistAuditId != null)
+      .map((v) => [v.checklistAuditId!, v]),
+  );
+
+  // Fallback: auditga bog‘lanmagan, lekin sana+filial+koordinator mos
+  const needFallback = rows.filter((r) => !byAudit.has(r.id));
+  const byKey = new Map<string, (typeof visits)[0]>();
+  if (needFallback.length) {
+    const coordIds = [...new Set(needFallback.map((r) => r.coordinatorId))];
+    const extra = await db
+      .select({
+        checklistAuditId: coordinatorBranchVisitsTable.checklistAuditId,
+        coordinatorUserId: coordinatorBranchVisitsTable.coordinatorUserId,
+        branchId: coordinatorBranchVisitsTable.branchId,
+        workDate: coordinatorBranchVisitsTable.workDate,
+        checkoutNote: coordinatorBranchVisitsTable.checkoutNote,
+        checkOutAt: coordinatorBranchVisitsTable.checkOutAt,
+        checkInAt: coordinatorBranchVisitsTable.checkInAt,
+      })
+      .from(coordinatorBranchVisitsTable)
+      .where(inArray(coordinatorBranchVisitsTable.coordinatorUserId, coordIds));
+    for (const v of extra) {
+      const k = `${v.coordinatorUserId}|${v.branchId}|${v.workDate}`;
+      if (!byKey.has(k) && v.checkoutNote) byKey.set(k, v);
+    }
+  }
+
+  return rows.map((row) => {
+    const v =
+      byAudit.get(row.id) ||
+      byKey.get(`${row.coordinatorId}|${row.managerEmployeeId}|${row.visitDate}`);
+    return {
+      ...row,
+      branchLocation: displayBranchName(row.branchLocation) || row.branchLocation,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      checkoutNote: v?.checkoutNote ?? null,
+      visitCheckOutAt: v?.checkOutAt ? v.checkOutAt.toISOString() : null,
+      visitCheckInAt: v?.checkInAt ? v.checkInAt.toISOString() : null,
+    };
+  });
+}
+
+function answerLabel(a: "yes" | "no" | null | undefined) {
+  if (a === "yes") return "Ha";
+  if (a === "no") return "Yo‘q";
+  return "—";
+}
+
+function branchLabelFromEmployee(fullName: string, location: string | null) {
+  const loc = displayBranchName(location);
+  const generic =
+    !loc ||
+    loc === "Filial" ||
+    loc === fullName ||
+    /\d+\s*°/.test(loc) ||
+    /^-?\d+[.,]\d+\s*[,;]\s*-?\d+/.test(loc);
+  return generic ? fullName : loc;
+}
+
+type CoverageVisit = {
+  visitCount: number;
+  lastVisitDate: string | null;
+  lastScore: number | null;
+  lastCoordinatorName: string | null;
+};
+
+type CoverageBranch = {
+  managerEmployeeId: number;
+  managerName: string;
+  branchLocation: string;
+  filled: boolean;
+  visitCount: number;
+  lastVisitDate: string | null;
+  lastScore: number | null;
+  lastCoordinatorName: string | null;
+};
+
+function toCoverageBranch(
+  managerEmployeeId: number,
+  managerName: string,
+  branchLocation: string,
+  visit?: CoverageVisit,
+): CoverageBranch {
+  const visitCount = visit?.visitCount ?? 0;
+  return {
+    managerEmployeeId,
+    managerName,
+    branchLocation,
+    filled: visitCount > 0,
+    visitCount,
+    lastVisitDate: visit?.lastVisitDate ?? null,
+    lastScore: visit?.lastScore ?? null,
+    lastCoordinatorName: visit?.lastCoordinatorName ?? null,
+  };
+}
+
+async function loadCoverage(req: AuthRequest) {
+  const from = checklistFrom(String(req.query.from || ""));
+  const to = String(req.query.to || "").trim();
+
+  const [people, coordUsers, auditRows] = await Promise.all([
+    db
+      .select({
+        id: employeesTable.id,
+        fullName: employeesTable.fullName,
+        userId: employeesTable.userId,
+        orgRole: employeesTable.orgRole,
+        reportsToId: employeesTable.reportsToId,
+        location: employeesTable.location,
+        employmentStatus: employeesTable.employmentStatus,
+      })
+      .from(employeesTable),
+    db
+      .select({
+        id: usersTable.id,
+        fullName: usersTable.fullName,
+      })
+      .from(usersTable)
+      .where(eq(usersTable.role, "koordinator")),
+    db
+      .select({
+        managerEmployeeId: branchAuditsTable.managerEmployeeId,
+        visitDate: branchAuditsTable.visitDate,
+        scorePercent: branchAuditsTable.scorePercent,
+        coordinatorName: branchAuditsTable.coordinatorName,
+      })
+      .from(branchAuditsTable),
+  ]);
+
+  const isCoord = (role: string | null | undefined) =>
+    role === "coordinator" || role === "koordinator";
+
+  const coordinators = people.filter((p) => isCoord(p.orgRole));
+  const seenUser = new Set(coordinators.map((c) => c.userId).filter((id): id is number => id != null));
+  for (const u of coordUsers) {
+    if (seenUser.has(u.id)) continue;
+    const emp = people.find((p) => p.userId === u.id);
+    if (emp) {
+      coordinators.push({ ...emp, fullName: emp.fullName || u.fullName });
+    } else {
+      coordinators.push({
+        id: -u.id,
+        fullName: u.fullName,
+        userId: u.id,
+        orgRole: "coordinator",
+        reportsToId: null,
+        location: null,
+        employmentStatus: "working",
+      });
+    }
+    seenUser.add(u.id);
+  }
+
+  const visits = new Map<number, CoverageVisit>();
+  for (const a of auditRows) {
+    if (from && a.visitDate < from) continue;
+    if (to && a.visitDate > to) continue;
+    const cur = visits.get(a.managerEmployeeId);
+    if (!cur) {
+      visits.set(a.managerEmployeeId, {
+        visitCount: 1,
+        lastVisitDate: a.visitDate,
+        lastScore: a.scorePercent,
+        lastCoordinatorName: a.coordinatorName,
+      });
+      continue;
+    }
+    cur.visitCount += 1;
+    if (!cur.lastVisitDate || a.visitDate >= cur.lastVisitDate) {
+      cur.lastVisitDate = a.visitDate;
+      cur.lastScore = a.scorePercent;
+      cur.lastCoordinatorName = a.coordinatorName;
+    }
+  }
+
+  const activeManagers = people.filter(
+    (m) => m.orgRole === "manager" && m.employmentStatus !== "dismissed",
+  );
+  const coordById = new Map(coordinators.map((c) => [c.id, c]));
+
+  const branchesByCoord = new Map<number, CoverageBranch[]>();
+  const unassigned: CoverageBranch[] = [];
+
+  for (const m of activeManagers) {
+    const branch = toCoverageBranch(
+      m.id,
+      m.fullName,
+      branchLabelFromEmployee(m.fullName, m.location),
+      visits.get(m.id),
+    );
+    const coord = m.reportsToId != null ? coordById.get(m.reportsToId) : undefined;
+    if (!coord) {
+      unassigned.push(branch);
+      continue;
+    }
+    const list = branchesByCoord.get(coord.id) ?? [];
+    list.push(branch);
+    branchesByCoord.set(coord.id, list);
+  }
+
+  const coordinatorRows = coordinators
+    .filter((c) => c.employmentStatus !== "dismissed" || (branchesByCoord.get(c.id)?.length ?? 0) > 0)
+    .map((c) => {
+      const branches = (branchesByCoord.get(c.id) ?? []).sort((a, b) =>
+        a.branchLocation.localeCompare(b.branchLocation, "uz"),
+      );
+      const filled = branches.filter((b) => b.filled).length;
+      const total = branches.length;
+      const missing = total - filled;
+      const dismissed = c.employmentStatus === "dismissed";
+      return {
+        employeeId: c.id,
+        userId: c.userId,
+        name: dismissed ? `${c.fullName} (ishdan ketgan)` : c.fullName,
+        dismissed,
+        total,
+        filled,
+        missing,
+        percent: total === 0 ? 0 : Math.round((filled / total) * 100),
+        branches,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "uz"));
+
+  unassigned.sort((a, b) => a.branchLocation.localeCompare(b.branchLocation, "uz"));
+
+  const assigned = coordinatorRows.reduce((s, c) => s + c.total, 0);
+  const filled = coordinatorRows.reduce((s, c) => s + c.filled, 0) + unassigned.filter((b) => b.filled).length;
+  const allBranches = assigned + unassigned.length;
+
+  return {
+    totals: {
+      coordinators: coordinatorRows.filter((c) => !c.dismissed).length,
+      branches: allBranches,
+      filled,
+      missing: allBranches - filled,
+      unassigned: unassigned.length,
+    },
+    coordinators: coordinatorRows,
+    unassigned,
+  };
+}
+
+async function resolvePharmacyManagerEmployeeId(userId: number, role?: string | null) {
+  const [emp] = await db
+    .select({
+      id: employeesTable.id,
+      orgRole: employeesTable.orgRole,
+      reportsToId: employeesTable.reportsToId,
+    })
+    .from(employeesTable)
+    .where(eq(employeesTable.userId, userId))
+    .limit(1);
+  if (!emp) return null;
+  if (role === "mudir" || emp.orgRole === "manager") return emp.id;
+  return emp.reportsToId ?? null;
+}
+
+async function loadFilteredAudits(req: AuthRequest) {
+  let rows = await db
+    .select()
+    .from(branchAuditsTable)
+    .orderBy(desc(branchAuditsTable.visitDate), desc(branchAuditsTable.id));
+
+  // Koordinator: o‘z filiallaridagi BARCHA tashriflar (kim yozganidan qat’i nazar) —
+  // shunda bir kunda 1 ta cheklist limitti UI da ham ko‘rinadi
+  if (req.userRole === "koordinator" && req.userId) {
+    const coordRows = await db
+      .select({ id: employeesTable.id, orgRole: employeesTable.orgRole })
+      .from(employeesTable)
+      .where(eq(employeesTable.userId, req.userId));
+    const coord = coordRows.find((r) => r.orgRole === "coordinator") ?? coordRows[0];
+    if (!coord) {
+      rows = rows.filter((r) => r.coordinatorId === req.userId);
+    } else {
+      const owned = await db
+        .select({ id: employeesTable.id })
+        .from(employeesTable)
+        .where(
+          and(eq(employeesTable.orgRole, "manager"), eq(employeesTable.reportsToId, coord.id)),
+        );
+      const ownedIds = new Set(owned.map((m) => m.id));
+      rows = rows.filter(
+        (r) => ownedIds.has(r.managerEmployeeId) || r.coordinatorId === req.userId,
+      );
+    }
+  }
+
+  if (isPharmacyBranchRole(req.userRole) && req.userId) {
+    const managerId = await resolvePharmacyManagerEmployeeId(req.userId, req.userRole);
+    rows = managerId ? rows.filter((r) => r.managerEmployeeId === managerId) : [];
+  }
+
+  const managerId = req.query.managerId
+    ? parseInt(String(req.query.managerId), 10)
+    : NaN;
+  if (!Number.isNaN(managerId)) {
+    rows = rows.filter((r) => r.managerEmployeeId === managerId);
+  }
+
+  const coordinatorId = req.query.coordinatorId
+    ? parseInt(String(req.query.coordinatorId), 10)
+    : NaN;
+  if (!Number.isNaN(coordinatorId)) {
+    rows = rows.filter((r) => r.coordinatorId === coordinatorId);
+  }
+
+  const from = checklistFrom(String(req.query.from || ""));
+  const to = String(req.query.to || "").trim();
+  rows = rows.filter((r) => r.visitDate >= from);
+  if (to) rows = rows.filter((r) => r.visitDate <= to);
+
+  const q = String(req.query.q || "").trim().toLowerCase();
+  if (q) {
+    rows = rows.filter((r) => {
+      const loc = displayBranchName(r.branchLocation) || "";
+      return (
+        loc.toLowerCase().includes(q) ||
+        String(r.managerName || "").toLowerCase().includes(q) ||
+        String(r.coordinatorName || "").toLowerCase().includes(q) ||
+        String(r.visitName || "").toLowerCase().includes(q)
+      );
+    });
+  }
+
+  return rows;
+}
+
+router.get("/checklist-coverage", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!canViewChecklistStatus(req.userRole)) {
+    res.status(403).json({ error: "Ruxsat yo‘q" });
+    return;
+  }
+  try {
+    res.json(await loadCoverage(req));
+  } catch (err) {
+    console.error("checklist-coverage", err);
+    res.status(500).json({ error: "Qamrov yuklanmadi" });
+  }
+});
+
+/** Filiallar (mudirlar) ro'yxati — tanlash uchun */
+router.get("/branch-audits/branches", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!requireRole(req, VIEW_ROLES)) {
+    res.status(403).json({ error: "Ruxsat yo'q" });
+    return;
+  }
+
+  const managers = await db
+    .select({
+      id: employeesTable.id,
+      fullName: employeesTable.fullName,
+      location: employeesTable.location,
+      employmentStatus: employeesTable.employmentStatus,
+      reportsToId: employeesTable.reportsToId,
+      userId: employeesTable.userId,
+      latitude: employeesTable.latitude,
+      longitude: employeesTable.longitude,
+    })
+    .from(employeesTable)
+    .where(eq(employeesTable.orgRole, "manager"));
+
+  let scoped = dedupeActiveBranches(managers.filter((m) => m.employmentStatus !== "dismissed"));
+
+  // Koordinator — faqat o‘z mudirlari (reportsToId = coordinator employee id)
+  if (req.userRole === "koordinator" && req.userId) {
+    const coordRows = await db
+      .select({ id: employeesTable.id, orgRole: employeesTable.orgRole })
+      .from(employeesTable)
+      .where(eq(employeesTable.userId, req.userId));
+    const coord = coordRows.find((r) => r.orgRole === "coordinator");
+    if (!coord) {
+      res.json([]);
+      return;
+    }
+    scoped = scoped.filter((m) => m.reportsToId === coord.id);
+  }
+
+  const seen = new Set<number>();
+  const active = scoped
+    .filter((m) => {
+      if (seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    })
+    .map((m) => {
+      const fromLoc = gpsFromLocationField(m.location);
+      const loc = displayBranchName(m.location);
+      const generic =
+        !loc ||
+        loc === "Filial" ||
+        loc === m.fullName ||
+        /\d+\s*°/.test(loc) ||
+        /^-?\d+[.,]\d+\s*[,;]\s*-?\d+/.test(loc);
+      return {
+        id: m.id,
+        managerName: m.fullName,
+        branchLocation: generic ? m.fullName : loc,
+        latitude: m.latitude ?? fromLoc?.lat ?? null,
+        longitude: m.longitude ?? fromLoc?.lng ?? null,
+      };
+    })
+    .sort((a, b) => a.branchLocation.localeCompare(b.branchLocation, "uz"));
+
+  res.json(active);
+});
+
+/** Saqlangan auditlar tarixi */
+router.get("/branch-audits", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!requireRole(req, VIEW_ROLES) && !canViewPharmacyReyting(req.userRole)) {
+    res.status(403).json({ error: "Ruxsat yo'q" });
+    return;
+  }
+  const rows = await loadFilteredAudits(req);
+  res.json(await enrichMany(rows));
+});
+
+router.get("/branch-audits/export", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!canExportChecklistStatus(req.userRole)) {
+    res.status(403).json({ error: "Ruxsat yo‘q" });
+    return;
+  }
+
+  const rows = await loadFilteredAudits(req);
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "AMIR FARM HR";
+  workbook.created = new Date();
+
+  const headerStyle = (cell: ExcelJS.Cell, fill = "FF0B3A5C") => {
+    cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    cell.border = {
+      top: { style: "thin", color: { argb: "FF083049" } },
+      left: { style: "thin", color: { argb: "FF083049" } },
+      bottom: { style: "thin", color: { argb: "FF083049" } },
+      right: { style: "thin", color: { argb: "FF083049" } },
+    };
+  };
+
+  const paintRow = (row: ExcelJS.Row, zebra: boolean) => {
+    const bg = zebra ? "FFF7FAFC" : "FFFFFFFF";
+    row.eachCell((cell) => {
+      cell.font = { name: "Calibri", size: 10 };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+      cell.alignment = { vertical: "middle", wrapText: true };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE2E8F0" } },
+        left: { style: "thin", color: { argb: "FFE2E8F0" } },
+        bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+        right: { style: "thin", color: { argb: "FFE2E8F0" } },
+      };
+    });
+    row.height = 22;
+  };
+
+  const byCoord = new Map<
+    string,
+    { visits: number; branches: Set<string>; scores: number[]; last: string }
+  >();
+  const byBranch = new Map<
+    string,
+    { visits: number; coordinators: Set<string>; scores: number[]; dates: string[] }
+  >();
+  for (const r of rows) {
+    const cKey = r.coordinatorName || `#${r.coordinatorId}`;
+    const bKey = displayBranchName(r.branchLocation) || r.managerName || "Filial";
+    const c = byCoord.get(cKey) ?? {
+      visits: 0,
+      branches: new Set<string>(),
+      scores: [],
+      last: r.visitDate,
+    };
+    c.visits += 1;
+    c.branches.add(bKey);
+    c.scores.push(r.scorePercent);
+    if (r.visitDate > c.last) c.last = r.visitDate;
+    byCoord.set(cKey, c);
+
+    const b = byBranch.get(bKey) ?? {
+      visits: 0,
+      coordinators: new Set<string>(),
+      scores: [],
+      dates: [],
+    };
+    b.visits += 1;
+    b.coordinators.add(cKey);
+    b.scores.push(r.scorePercent);
+    b.dates.push(r.visitDate);
+    byBranch.set(bKey, b);
+  }
+
+  const s1 = workbook.addWorksheet("Xulosa", { views: [{ state: "frozen", ySplit: 2 }] });
+  s1.mergeCells("A1:F1");
+  const t1 = s1.getCell("A1");
+  t1.value = `AMIR FARM — Cheklist holati · ${rows.length} tashrif`;
+  t1.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
+  t1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
+  t1.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+  s1.getRow(1).height = 28;
+
+  ["Koordinator", "Tashriflar", "Filiallar", "O‘rtacha %", "Oxirgi tashrif", ""].forEach((h, i) => {
+    const cell = s1.getRow(2).getCell(i + 1);
+    cell.value = h;
+    headerStyle(cell, "FF1A5F8A");
+  });
+  s1.columns = [{ width: 28 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 16 }, { width: 8 }];
+  let i = 0;
+  for (const [name, v] of [...byCoord.entries()].sort((a, b) => b[1].visits - a[1].visits)) {
+    const avg = v.scores.length ? Math.round(v.scores.reduce((a, b) => a + b, 0) / v.scores.length) : 0;
+    const row = s1.addRow([name, v.visits, v.branches.size, avg, v.last, ""]);
+    paintRow(row, i++ % 2 === 0);
+  }
+
+  s1.addRow([]);
+  const gap = s1.addRow(["Filial", "Tashriflar", "Koordinatorlar", "O‘rtacha %", "Sanalar", ""]);
+  gap.eachCell((cell) => headerStyle(cell, "FF0F766E"));
+  i = 0;
+  for (const [name, v] of [...byBranch.entries()].sort((a, b) => b[1].visits - a[1].visits)) {
+    const avg = v.scores.length ? Math.round(v.scores.reduce((a, b) => a + b, 0) / v.scores.length) : 0;
+    const dates = [...new Set(v.dates)].sort().join(", ");
+    const row = s1.addRow([name, v.visits, v.coordinators.size, avg, dates, ""]);
+    paintRow(row, i++ % 2 === 0);
+  }
+
+  const s2 = workbook.addWorksheet("Tashriflar", { views: [{ state: "frozen", ySplit: 2 }] });
+  s2.mergeCells("A1:L1");
+  const t2 = s2.getCell("A1");
+  t2.value = "AMIR FARM — Tashriflar (sana, vaqt, filial, mudir, koordinator, lokatsiya, ball)";
+  t2.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
+  t2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
+  s2.getRow(1).height = 28;
+  const h2 = [
+    "Sana",
+    "Vaqt",
+    "Tashrif",
+    "Filial",
+    "Mudir",
+    "Koordinator",
+    "Ball %",
+    "Ha",
+    "Yo‘q",
+    "GPS",
+    "Masofa (m)",
+    "Izoh",
+  ];
+  h2.forEach((h, idx) => {
+    const cell = s2.getRow(2).getCell(idx + 1);
+    cell.value = h;
+    headerStyle(cell, "FF1A5F8A");
+  });
+  s2.columns = [
+    { width: 12 },
+    { width: 12 },
+    { width: 16 },
+    { width: 22 },
+    { width: 24 },
+    { width: 24 },
+    { width: 10 },
+    { width: 8 },
+    { width: 8 },
+    { width: 28 },
+    { width: 12 },
+    { width: 36 },
+  ];
+  rows.forEach((r, idx) => {
+    const created = r.createdAt ? new Date(r.createdAt) : null;
+    const time = created
+      ? created.toLocaleTimeString("uz-UZ", {
+          timeZone: "Asia/Tashkent",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "";
+    const gps =
+      r.checkLatitude != null && r.checkLongitude != null
+        ? `${Number(r.checkLatitude).toFixed(6)}, ${Number(r.checkLongitude).toFixed(6)}`
+        : "—";
+    const row = s2.addRow([
+      r.visitDate,
+      time,
+      r.visitName,
+      displayBranchName(r.branchLocation) || "Filial",
+      r.managerName || "—",
+      r.coordinatorName || "—",
+      r.scorePercent,
+      r.yesCount,
+      r.noCount,
+      gps,
+      r.distanceMeters ?? "—",
+      r.generalNote || "",
+    ]);
+    paintRow(row, idx % 2 === 0);
+  });
+  s2.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: 12 } };
+
+  const s3 = workbook.addWorksheet("Javoblar", { views: [{ state: "frozen", ySplit: 2 }] });
+  s3.mergeCells("A1:H1");
+  const t3 = s3.getCell("A1");
+  t3.value = "AMIR FARM — Cheklist savollari va javoblar";
+  t3.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
+  t3.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
+  s3.getRow(1).height = 28;
+  ["Sana", "Filial", "Koordinator", "Bo‘lim", "Savol", "Javob", "Izoh", "Ball %"].forEach((h, idx) => {
+    const cell = s3.getRow(2).getCell(idx + 1);
+    cell.value = h;
+    headerStyle(cell, "FF1A5F8A");
+  });
+  s3.columns = [
+    { width: 12 },
+    { width: 22 },
+    { width: 22 },
+    { width: 28 },
+    { width: 46 },
+    { width: 10 },
+    { width: 28 },
+    { width: 10 },
+  ];
+  let qIdx = 0;
+  for (const r of rows) {
+    const cats = Array.isArray(r.categories) ? r.categories : [];
+    for (const cat of cats) {
+      for (const it of cat.items || []) {
+        const row = s3.addRow([
+          r.visitDate,
+          displayBranchName(r.branchLocation) || "Filial",
+          r.coordinatorName || "—",
+          cat.title,
+          it.label,
+          answerLabel(it.answer),
+          it.note || "",
+          r.scorePercent,
+        ]);
+        paintRow(row, qIdx++ % 2 === 0);
+        if (it.answer === "yes") {
+          row.getCell(6).font = { name: "Calibri", size: 10, color: { argb: "FF047857" }, bold: true };
+        }
+        if (it.answer === "no") {
+          row.getCell(6).font = { name: "Calibri", size: 10, color: { argb: "FFB91C1C" }, bold: true };
+        }
+      }
+    }
+  }
+  s3.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: 8 } };
+
+  const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  );
+  res.setHeader("Content-Disposition", `attachment; filename="cheklist-holati-${stamp}.xlsx"`);
+  res.send(buffer);
+});
+
+router.get("/branch-audits/coverage", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!canViewChecklistStatus(req.userRole)) {
+    res.status(403).json({ error: "Ruxsat yo‘q" });
+    return;
+  }
+  try {
+    res.json(await loadCoverage(req));
+  } catch (err) {
+    console.error("branch-audits/coverage", err);
+    res.status(500).json({ error: "Qamrov yuklanmadi" });
+  }
+});
+
+router.get("/branch-audits/coverage/export", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!canExportChecklistStatus(req.userRole)) {
+    res.status(403).json({ error: "Ruxsat yo‘q" });
+    return;
+  }
+
+  const data = await loadCoverage(req);
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "AMIR FARM HR";
+  workbook.created = new Date();
+
+  const headerStyle = (cell: ExcelJS.Cell, fill = "FF0B3A5C") => {
+    cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    cell.border = {
+      top: { style: "thin", color: { argb: "FF083049" } },
+      left: { style: "thin", color: { argb: "FF083049" } },
+      bottom: { style: "thin", color: { argb: "FF083049" } },
+      right: { style: "thin", color: { argb: "FF083049" } },
+    };
+  };
+  const paintRow = (row: ExcelJS.Row, zebra: boolean, fill?: string) => {
+    const bg = fill || (zebra ? "FFF7FAFC" : "FFFFFFFF");
+    row.eachCell((cell) => {
+      cell.font = { name: "Calibri", size: 10 };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+      cell.alignment = { vertical: "middle", wrapText: true };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE2E8F0" } },
+        left: { style: "thin", color: { argb: "FFE2E8F0" } },
+        bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+        right: { style: "thin", color: { argb: "FFE2E8F0" } },
+      };
+    });
+    row.height = 22;
+  };
+
+  const s1 = workbook.addWorksheet("Qamrov", { views: [{ state: "frozen", ySplit: 2 }] });
+  s1.mergeCells("A1:F1");
+  const t1 = s1.getCell("A1");
+  t1.value = `AMIR FARM — Filial qamrovi · ${data.totals.branches} filial · kiritilgan ${data.totals.filled} · kiritilmagan ${data.totals.missing}`;
+  t1.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
+  t1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
+  t1.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+  s1.getRow(1).height = 28;
+  ["Koordinator", "Filiallar", "Kiritilgan", "Kiritilmagan", "Qamrov %", ""].forEach((h, i) => {
+    const cell = s1.getRow(2).getCell(i + 1);
+    cell.value = h;
+    headerStyle(cell, "FF1A5F8A");
+  });
+  s1.columns = [{ width: 32 }, { width: 12 }, { width: 14 }, { width: 16 }, { width: 12 }, { width: 8 }];
+  data.coordinators.forEach((c, idx) => {
+    const row = s1.addRow([c.name, c.total, c.filled, c.missing, c.percent, ""]);
+    paintRow(row, idx % 2 === 0);
+  });
+  if (data.unassigned.length) {
+    const row = s1.addRow([
+      "Biriktirilmagan",
+      data.unassigned.length,
+      data.unassigned.filter((b) => b.filled).length,
+      data.unassigned.filter((b) => !b.filled).length,
+      "",
+      "",
+    ]);
+    paintRow(row, true, "FFFEF3C7");
+  }
+
+  const s2 = workbook.addWorksheet("Filiallar", { views: [{ state: "frozen", ySplit: 2 }] });
+  s2.mergeCells("A1:H1");
+  const t2 = s2.getCell("A1");
+  t2.value = "AMIR FARM — Har bir filial: kiritilgan / kiritilmagan";
+  t2.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
+  t2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
+  s2.getRow(1).height = 28;
+  ["Koordinator", "Filial", "Mudir", "Holat", "Tashriflar", "Oxirgi sana", "Ball %", "Oxirgi koordinator"].forEach(
+    (h, i) => {
+      const cell = s2.getRow(2).getCell(i + 1);
+      cell.value = h;
+      headerStyle(cell, "FF1A5F8A");
+    },
+  );
+  s2.columns = [
+    { width: 28 },
+    { width: 24 },
+    { width: 24 },
+    { width: 16 },
+    { width: 12 },
+    { width: 14 },
+    { width: 10 },
+    { width: 24 },
+  ];
+  let i = 0;
+  const writeBranch = (coordName: string, b: CoverageBranch) => {
+    const row = s2.addRow([
+      coordName,
+      b.branchLocation,
+      b.managerName,
+      b.filled ? "Kiritilgan" : "Kiritilmagan",
+      b.visitCount,
+      b.lastVisitDate || "—",
+      b.lastScore ?? "—",
+      b.lastCoordinatorName || "—",
+    ]);
+    paintRow(row, i++ % 2 === 0, b.filled ? "FFECFDF5" : "FFFEF2F2");
+    row.getCell(4).font = {
+      name: "Calibri",
+      size: 10,
+      bold: true,
+      color: { argb: b.filled ? "FF047857" : "FFB91C1C" },
+    };
+  };
+  for (const c of data.coordinators) {
+    for (const b of c.branches) writeBranch(c.name, b);
+  }
+  for (const b of data.unassigned) writeBranch("Biriktirilmagan", b);
+  s2.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: 8 } };
+
+  const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  );
+  res.setHeader("Content-Disposition", `attachment; filename="cheklist-qamrov-${stamp}.xlsx"`);
+  res.send(buffer);
+});
+
+function tashkentYmd(d = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tashkent",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+function addDaysYmd(ymd: string, delta: number) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y!, m! - 1, d! + delta));
+  return dt.toISOString().slice(0, 10);
+}
+
+function periodRange(period: string): { period: "day" | "week" | "month"; from: string; to: string } {
+  const to = tashkentYmd();
+  if (period === "day") return { period: "day", from: to, to };
+  if (period === "week") {
+    const [y, m, d] = to.split("-").map(Number);
+    const dt = new Date(Date.UTC(y!, m! - 1, d!));
+    const dow = dt.getUTCDay();
+    const offset = dow === 0 ? -6 : 1 - dow;
+    return { period: "week", from: addDaysYmd(to, offset), to };
+  }
+  return { period: "month", from: `${to.slice(0, 7)}-01`, to };
+}
+
+function compositeRating(parts: {
+  visits: number;
+  maxVisits: number;
+  avgScore: number;
+  coveragePct: number;
+  gpsPct: number;
+  excellentPct: number;
+  diversityPct: number;
+}) {
+  if (parts.visits <= 0) return 0;
+  const visitPart = parts.maxVisits > 0 ? (parts.visits / parts.maxVisits) * 100 : 0;
+  return Math.round(
+    visitPart * 0.25 +
+      parts.avgScore * 0.25 +
+      parts.coveragePct * 0.2 +
+      parts.gpsPct * 0.15 +
+      parts.excellentPct * 0.1 +
+      parts.diversityPct * 0.05,
+  );
+}
+
+async function loadCoordinatorRanking(periodRaw: string) {
+  const range = periodRange(periodRaw);
+  const [people, coordUsers, auditRows] = await Promise.all([
+    db
+      .select({
+        id: employeesTable.id,
+        fullName: employeesTable.fullName,
+        userId: employeesTable.userId,
+        orgRole: employeesTable.orgRole,
+        reportsToId: employeesTable.reportsToId,
+        employmentStatus: employeesTable.employmentStatus,
+      })
+      .from(employeesTable),
+    db
+      .select({
+        id: usersTable.id,
+        fullName: usersTable.fullName,
+        status: usersTable.status,
+      })
+      .from(usersTable)
+      .where(eq(usersTable.role, "koordinator")),
+    db
+      .select({
+        coordinatorId: branchAuditsTable.coordinatorId,
+        coordinatorName: branchAuditsTable.coordinatorName,
+        managerEmployeeId: branchAuditsTable.managerEmployeeId,
+        visitDate: branchAuditsTable.visitDate,
+        scorePercent: branchAuditsTable.scorePercent,
+        checkLatitude: branchAuditsTable.checkLatitude,
+        checkLongitude: branchAuditsTable.checkLongitude,
+        yesCount: branchAuditsTable.yesCount,
+        noCount: branchAuditsTable.noCount,
+      })
+      .from(branchAuditsTable),
+  ]);
+
+  const RANKING_OK = new Set(["active", "on_leave"]);
+
+  type Coord = {
+    employeeId: number;
+    userId: number | null;
+    name: string;
+  };
+  const byUser = new Map<number, Coord>();
+  for (const u of coordUsers) {
+    if (!RANKING_OK.has(u.status)) continue;
+    const emp = people.find(
+      (p) =>
+        p.userId === u.id &&
+        (p.orgRole === "coordinator" || p.orgRole === "koordinator") &&
+        p.employmentStatus !== "dismissed",
+    ) ?? people.find((p) => p.userId === u.id && p.employmentStatus !== "dismissed");
+    byUser.set(u.id, {
+      employeeId: emp?.id ?? -u.id,
+      userId: u.id,
+      name: emp?.fullName || u.fullName,
+    });
+  }
+
+  const assignedByEmp = new Map<number, Set<number>>();
+  for (const m of people) {
+    if (m.orgRole !== "manager" || m.employmentStatus === "dismissed" || m.reportsToId == null) continue;
+    const set = assignedByEmp.get(m.reportsToId) ?? new Set<number>();
+    set.add(m.id);
+    assignedByEmp.set(m.reportsToId, set);
+  }
+
+  type Acc = {
+    visits: number;
+    scores: number[];
+    gps: number;
+    excellent: number;
+    yes: number;
+    no: number;
+    branches: Set<number>;
+    last: string;
+    name: string;
+  };
+  const acc = new Map<number, Acc>();
+  const ensure = (userId: number, name: string): Acc => {
+    const cur = acc.get(userId);
+    if (cur) return cur;
+    const row: Acc = {
+      visits: 0,
+      scores: [],
+      gps: 0,
+      excellent: 0,
+      yes: 0,
+      no: 0,
+      branches: new Set(),
+      last: "",
+      name,
+    };
+    acc.set(userId, row);
+    return row;
+  };
+
+  for (const a of auditRows) {
+    if (a.visitDate < range.from || a.visitDate > range.to) continue;
+    if (!isOnOrAfterChecklistEpoch(a.visitDate)) continue;
+    if (!byUser.has(a.coordinatorId)) continue;
+    const meta = byUser.get(a.coordinatorId)!;
+    const row = ensure(a.coordinatorId, meta.name);
+    row.visits += 1;
+    row.scores.push(a.scorePercent);
+    row.yes += a.yesCount ?? 0;
+    row.no += a.noCount ?? 0;
+    row.branches.add(a.managerEmployeeId);
+    if (a.checkLatitude != null && a.checkLongitude != null) row.gps += 1;
+    if (a.scorePercent >= 85) row.excellent += 1;
+    if (!row.last || a.visitDate >= row.last) row.last = a.visitDate;
+  }
+
+  for (const [userId, meta] of byUser) {
+    ensure(userId, meta.name);
+  }
+
+  const maxVisits = Math.max(0, ...[...acc.values()].map((r) => r.visits));
+
+  const rankings = [...byUser.values()]
+    .map((c) => {
+      const userId = c.userId!;
+      const row = acc.get(userId);
+      if (!row) return null;
+      const assigned = assignedByEmp.get(c.employeeId) ?? new Set<number>();
+      let covered = 0;
+      for (const id of assigned) if (row.branches.has(id)) covered += 1;
+      const coveragePct =
+        assigned.size > 0 ? Math.round((covered / assigned.size) * 100) : row.visits > 0 ? 50 : 0;
+      const avgScore =
+        row.scores.length === 0 ? 0 : Math.round(row.scores.reduce((s, n) => s + n, 0) / row.scores.length);
+      const gpsPct = row.visits === 0 ? 0 : Math.round((row.gps / row.visits) * 100);
+      const excellentPct = row.visits === 0 ? 0 : Math.round((row.excellent / row.visits) * 100);
+      const diversityPct = row.visits === 0 ? 0 : Math.round((row.branches.size / row.visits) * 100);
+      const rating = compositeRating({
+        visits: row.visits,
+        maxVisits,
+        avgScore,
+        coveragePct,
+        gpsPct,
+        excellentPct,
+        diversityPct,
+      });
+      return {
+        coordinatorId: userId,
+        employeeId: c.employeeId,
+        name: c.name,
+        rating,
+        visits: row.visits,
+        uniqueBranches: row.branches.size,
+        assignedBranches: assigned.size,
+        coveredBranches: covered,
+        coveragePct,
+        avgScore,
+        gpsPct,
+        excellentPct,
+        yesCount: row.yes,
+        noCount: row.no,
+        lastVisit: row.last || null,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row != null)
+    .sort((a, b) => b.rating - a.rating || b.visits - a.visits || b.avgScore - a.avgScore)
+    .map((row, i) => ({ ...row, rank: i + 1 }));
+
+  return {
+    ...range,
+    maxVisits,
+    rankings,
+  };
+}
+
+router.get("/branch-audits/ranking", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!canViewCoordinatorRanking(req.userRole)) {
+    res.status(403).json({ error: "Ruxsat yo‘q" });
+    return;
+  }
+  try {
+    res.json(await loadCoordinatorRanking(String(req.query.period || "week")));
+  } catch (err) {
+    console.error("branch-audits/ranking", err);
+    res.status(500).json({ error: "Reyting yuklanmadi" });
+  }
+});
+
+/** Koordinatorning ochiq tashrifi (Keldim qilingan, Ketdim yo‘q) */
+router.get("/branch-audits/my-visit", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!req.userId) {
+    res.status(401).json({ error: "Avtorizatsiya kerak" });
+    return;
+  }
+  if (req.userRole !== "koordinator" && !hasFullPlatformAccess(req.userRole)) {
+    res.json({ visit: null });
+    return;
+  }
+  try {
+    const open = await getOpenCoordinatorVisit(req.userId);
+    const isOffice = open ? isCoordinatorOfficeVisit(open) : false;
+    res.json({
+      visit: open ? serializeVisit(open) : null,
+      message: open
+        ? isOffice
+          ? `Asosiy ofisda ochiq «Keldim». Vaqtni kuzating — ketganda «Ketdim» qiling («Asosiy ofisda qolish»).`
+          : `Ochiq tashrif: «${open.branchLabel || "Filial"}». Cheklistni shu yerda yakunlang, keyin «Ketdim» qiling.`
+        : "Hozir ochiq tashrif yo‘q. Filialda yoki asosiy ofisda Face ID bilan «Keldim» qiling.",
+    });
+  } catch (err) {
+    console.error("GET /branch-audits/my-visit error:", err);
+    res.status(503).json({ error: "Tashrif holati yuklanmadi" });
+  }
+});
+
+/** Koordinator — asosiy ofisda qolish tarixi (Keldim/Ketdim) */
+router.get("/branch-audits/my-office-stays", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!req.userId) {
+    res.status(401).json({ error: "Avtorizatsiya kerak" });
+    return;
+  }
+  if (req.userRole !== "koordinator" && !hasFullPlatformAccess(req.userRole)) {
+    res.status(403).json({ error: "Faqat koordinator" });
+    return;
+  }
+  try {
+    const from = String(req.query.from || "").trim() || undefined;
+    const to = String(req.query.to || "").trim() || undefined;
+    const items = await listCoordinatorVisits({
+      from,
+      to,
+      coordinatorUserId: req.userId,
+      branchId: COORD_OFFICE_BRANCH_ID,
+      limit: 200,
+    });
+    const open = items.find((i) => i.stillOpen) || null;
+    const closed = items.filter((i) => !i.stillOpen);
+    const avgStay =
+      closed.filter((i) => i.durationMinutes != null).length > 0
+        ? Math.round(
+            closed
+              .filter((i) => i.durationMinutes != null)
+              .reduce((s, i) => s + (i.durationMinutes || 0), 0) /
+              closed.filter((i) => i.durationMinutes != null).length,
+          )
+        : null;
+    res.json({
+      officeLabel: COORD_OFFICE_LABEL,
+      open,
+      items,
+      summary: {
+        total: items.length,
+        openCount: open ? 1 : 0,
+        closedCount: closed.length,
+        avgStayMinutes: avgStay,
+        avgStayLabel:
+          avgStay == null
+            ? null
+            : avgStay < 60
+              ? `${avgStay} daq`
+              : `${Math.floor(avgStay / 60)} soat ${avgStay % 60} daq`,
+      },
+    });
+  } catch (err) {
+    console.error("GET /branch-audits/my-office-stays error:", err);
+    res.status(503).json({ error: "Ofis qolishlari yuklanmadi" });
+  }
+});
+
+/**
+ * Filial tashrifini ochish — FAQAT yashil zona (70 m). Face ID checklist sahifasidan.
+ */
+router.post("/branch-audits/my-visit/start", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!req.userId) {
+    res.status(401).json({ error: "Avtorizatsiya kerak" });
+    return;
+  }
+  if (req.userRole !== "koordinator" && !hasFullPlatformAccess(req.userRole)) {
+    res.status(403).json({ error: "Faqat koordinator" });
+    return;
+  }
+  try {
+    const branchId = Number(req.body?.branchId);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      res.status(400).json({ error: "Filial tanlang" });
+      return;
+    }
+    const latitude =
+      req.body?.latitude != null && Number.isFinite(Number(req.body.latitude))
+        ? Number(req.body.latitude)
+        : null;
+    const longitude =
+      req.body?.longitude != null && Number.isFinite(Number(req.body.longitude))
+        ? Number(req.body.longitude)
+        : null;
+
+    const zone = await assertInBranchGeofence({
+      branchId,
+      latitude,
+      longitude,
+      maxMeters: COORD_VISIT_GEOFENCE_METERS,
+    });
+    if (!zone.ok) {
+      res.status(zone.status).json({
+        error: zone.error,
+        code: zone.code,
+        distanceMeters: zone.distanceMeters,
+      });
+      return;
+    }
+
+    const [emp] = await db
+      .select({
+        id: employeesTable.id,
+        fullName: employeesTable.fullName,
+      })
+      .from(employeesTable)
+      .where(eq(employeesTable.userId, req.userId))
+      .limit(1);
+    if (!emp) {
+      res.status(404).json({ error: "Koordinator profili topilmadi" });
+      return;
+    }
+
+    const branchLabel = zone.branchLabel;
+    const workDate = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Tashkent" });
+    const [user] = await db
+      .select({ fullName: usersTable.fullName })
+      .from(usersTable)
+      .where(eq(usersTable.id, req.userId))
+      .limit(1);
+
+    const result = await startCoordinatorVisit({
+      userId: req.userId,
+      employeeId: emp.id,
+      fullName: user?.fullName || emp.fullName,
+      branchId,
+      branchLabel,
+      workDate,
+      latitude,
+      longitude,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error, code: result.code });
+      return;
+    }
+    res.json({
+      ok: true,
+      visit: serializeVisit(result.visit),
+      distanceMeters: zone.distanceMeters,
+      message: `«${branchLabel}» tashrifi ochildi. Endi cheklistni to‘ldiring. Har 30 daqiqada hududni tasdiqlang yoki ish tugasa Ketdim qiling.`,
+    });
+  } catch (err) {
+    console.error("POST /branch-audits/my-visit/start error:", err);
+    res.status(503).json({ error: "Tashrif ochilmadi" });
+  }
+});
+
+/**
+ * Har 30 daqiqalik hudud tasdiqlash — faqat yashil zonada.
+ */
+router.post("/branch-audits/my-visit/confirm-presence", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!req.userId) {
+    res.status(401).json({ error: "Avtorizatsiya kerak" });
+    return;
+  }
+  if (req.userRole !== "koordinator" && !hasFullPlatformAccess(req.userRole)) {
+    res.status(403).json({ error: "Faqat koordinator" });
+    return;
+  }
+  try {
+    const latitude =
+      req.body?.latitude != null && Number.isFinite(Number(req.body.latitude))
+        ? Number(req.body.latitude)
+        : null;
+    const longitude =
+      req.body?.longitude != null && Number.isFinite(Number(req.body.longitude))
+        ? Number(req.body.longitude)
+        : null;
+
+    const result = await confirmCoordinatorPresence({
+      userId: req.userId,
+      latitude,
+      longitude,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({
+        error: result.error,
+        code: result.code,
+        distanceMeters: result.distanceMeters,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      visit: serializeVisit(result.visit),
+      distanceMeters: result.distanceMeters,
+      message: "Hudud tasdiqlandi — ishingizni davom ettiring.",
+    });
+  } catch (err) {
+    console.error("POST /branch-audits/my-visit/confirm-presence error:", err);
+    res.status(503).json({ error: "Hudud tasdiqlanmadi" });
+  }
+});
+
+/**
+ * Bloklangan koordinator — adminga ruxsat so‘rovi.
+ */
+router.post("/branch-audits/my-visit/request-unlock", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!req.userId) {
+    res.status(401).json({ error: "Avtorizatsiya kerak" });
+    return;
+  }
+  if (req.userRole !== "koordinator" && !hasFullPlatformAccess(req.userRole)) {
+    res.status(403).json({ error: "Faqat koordinator" });
+    return;
+  }
+  try {
+    const result = await requestPresenceUnlock({ userId: req.userId });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error, code: result.code });
+      return;
+    }
+    res.json({
+      ok: true,
+      visit: serializeVisit(result.visit),
+      message: "So‘rov adminga yuborildi. Javobni kuting.",
+    });
+  } catch (err) {
+    console.error("POST /branch-audits/my-visit/request-unlock error:", err);
+    res.status(503).json({ error: "So‘rov yuborilmadi" });
+  }
+});
+
+/**
+ * Admin: ochiq tashrifni Ketdim bilan majburiy yopish (geofence/cheklist shartsiz).
+ * Koordinator keyin boshqa filialda yangi Keldim qila oladi.
+ */
+router.post(
+  "/branch-audits/visits/:id/force-checkout",
+  requireAuth,
+  async (req: AuthRequest, res): Promise<void> => {
+    if (!req.userId) {
+      res.status(401).json({ error: "Avtorizatsiya kerak" });
+      return;
+    }
+    if (
+      req.userRole !== "admin" &&
+      !hasFullPlatformAccess(req.userRole) &&
+      !isDirectorRole(req.userRole)
+    ) {
+      res.status(403).json({ error: "Faqat admin / rahbariyat" });
+      return;
+    }
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId) || visitId <= 0) {
+      res.status(400).json({ error: "Noto‘g‘ri tashrif id" });
+      return;
+    }
+    try {
+      const note = req.body?.note != null ? String(req.body.note) : null;
+      const result = await adminForceCloseCoordinatorVisit({
+        visitId,
+        adminUserId: req.userId,
+        note,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error, code: result.code });
+        return;
+      }
+      const visit = serializeVisit(result.visit);
+      res.json({
+        ok: true,
+        visit,
+        message: `«${visit.branchLabel || "Filial"}» Ketdim bilan yopildi. Koordinator boshqa filialga o‘ta oladi.`,
+      });
+    } catch (err) {
+      console.error("POST /branch-audits/visits/:id/force-checkout error:", err);
+      res.status(503).json({ error: "Tashrif yopilmadi" });
+    }
+  },
+);
+
+/**
+ * Admin: barcha bloklangan ochiq tashriflarga bir bosishda ruxsat.
+ */
+router.post(
+  "/branch-audits/visits/approve-unlock-all",
+  requireAuth,
+  async (req: AuthRequest, res): Promise<void> => {
+    if (!req.userId) {
+      res.status(401).json({ error: "Avtorizatsiya kerak" });
+      return;
+    }
+    if (
+      req.userRole !== "admin" &&
+      !hasFullPlatformAccess(req.userRole) &&
+      !isDirectorRole(req.userRole)
+    ) {
+      res.status(403).json({ error: "Faqat admin / rahbariyat" });
+      return;
+    }
+    try {
+      const open = await db
+        .select()
+        .from(coordinatorBranchVisitsTable)
+        .where(
+          and(
+            eq(coordinatorBranchVisitsTable.status, "open"),
+            isNull(coordinatorBranchVisitsTable.checkOutAt),
+          ),
+        );
+      const blocked = open.filter((v) => isVisitPresenceBlocked(v));
+      const names: string[] = [];
+      for (const v of blocked) {
+        const r = await approvePresenceUnlock({ visitId: v.id, adminUserId: req.userId });
+        if (r.ok) names.push(v.coordinatorName || `#${v.coordinatorUserId}`);
+      }
+      res.json({
+        ok: true,
+        approved: names.length,
+        names,
+        message: names.length
+          ? `${names.length} ta koordinatorga ruxsat berildi: ${names.join(", ")}`
+          : "Bloklangan tashrif yo‘q",
+      });
+    } catch (err) {
+      console.error("POST /branch-audits/visits/approve-unlock-all error:", err);
+      res.status(503).json({ error: "Ruxsat berilmadi" });
+    }
+  },
+);
+
+/**
+ * Admin: hudud bloki ruxsatini berish.
+ */
+router.post(
+  "/branch-audits/visits/:id/approve-unlock",
+  requireAuth,
+  async (req: AuthRequest, res): Promise<void> => {
+    if (!req.userId) {
+      res.status(401).json({ error: "Avtorizatsiya kerak" });
+      return;
+    }
+    if (
+      req.userRole !== "admin" &&
+      !hasFullPlatformAccess(req.userRole) &&
+      !isDirectorRole(req.userRole)
+    ) {
+      res.status(403).json({ error: "Faqat admin / rahbariyat" });
+      return;
+    }
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId) || visitId <= 0) {
+      res.status(400).json({ error: "Noto‘g‘ri tashrif id" });
+      return;
+    }
+    try {
+      const result = await approvePresenceUnlock({
+        visitId,
+        adminUserId: req.userId,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error, code: result.code });
+        return;
+      }
+      res.json({
+        ok: true,
+        visit: serializeVisit(result.visit),
+        message: "Ruxsat berildi — koordinator cheklistni davom ettirishi mumkin.",
+      });
+    } catch (err) {
+      console.error("POST /branch-audits/visits/:id/approve-unlock error:", err);
+      res.status(503).json({ error: "Ruxsat berilmadi" });
+    }
+  },
+);
+
+/**
+ * Ketdim: izoh + yashil zona — keyingi filialga o‘tish mumkin.
+ */
+router.post("/branch-audits/my-visit/finish", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!req.userId) {
+    res.status(401).json({ error: "Avtorizatsiya kerak" });
+    return;
+  }
+  if (req.userRole !== "koordinator" && !hasFullPlatformAccess(req.userRole)) {
+    res.status(403).json({ error: "Faqat koordinator" });
+    return;
+  }
+  try {
+    const note = String(req.body?.note || "").trim();
+    const latitude =
+      req.body?.latitude != null && Number.isFinite(Number(req.body.latitude))
+        ? Number(req.body.latitude)
+        : null;
+    const longitude =
+      req.body?.longitude != null && Number.isFinite(Number(req.body.longitude))
+        ? Number(req.body.longitude)
+        : null;
+
+    const result = await finishCoordinatorVisitWithNote({
+      userId: req.userId,
+      note,
+      latitude,
+      longitude,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({
+        error: result.error,
+        code: result.code,
+        distanceMeters: result.distanceMeters,
+      });
+      return;
+    }
+
+    const visit = serializeVisit(result.visit);
+    const isOffice = isCoordinatorOfficeVisit(result.visit);
+    res.json({
+      ok: true,
+      visit,
+      message: isOffice
+        ? `Asosiy ofisda qolish yopildi (${visit.durationLabel}). Keyin filialga yoki qayta ofisga o‘tishingiz mumkin.`
+        : `«${visit.branchLabel || "Filial"}» yopildi. Keyingi filialni tanlashingiz mumkin.`,
+    });
+  } catch (err) {
+    console.error("POST /branch-audits/my-visit/finish error:", err);
+    res.status(503).json({ error: "Tashrif yopilmadi" });
+  }
+});
+
+/**
+ * Rahbariyat monitoringi — Keldim/Ketdim vaqtlari, filialda qolish, cheklist vaqti.
+ */
+router.get("/branch-audits/visit-monitor", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!canViewChecklistStatus(req.userRole)) {
+    res.status(403).json({ error: "Ruxsat yo‘q" });
+    return;
+  }
+  try {
+    const from = checklistFrom(String(req.query.from || ""));
+    const to = String(req.query.to || "").trim() || undefined;
+    const coordinatorUserId = req.query.coordinatorId
+      ? parseInt(String(req.query.coordinatorId), 10)
+      : undefined;
+    const branchId = req.query.branchId ? parseInt(String(req.query.branchId), 10) : undefined;
+    const items = await listCoordinatorVisits({
+      from,
+      to,
+      coordinatorUserId: Number.isFinite(coordinatorUserId) ? coordinatorUserId : undefined,
+      branchId: Number.isFinite(branchId!) ? branchId : undefined,
+      limit: 800,
+    });
+
+    const avg = (nums: Array<number | null | undefined>) => {
+      const ok = nums.filter((n): n is number => n != null && Number.isFinite(n) && n >= 0);
+      return ok.length ? Math.round(ok.reduce((s, n) => s + n, 0) / ok.length) : null;
+    };
+    const sum = (nums: Array<number | null | undefined>) =>
+      nums.filter((n): n is number => n != null && Number.isFinite(n) && n >= 0).reduce((s, n) => s + n, 0);
+
+    const branchItems = items.filter((i) => !i.isOffice);
+    const officeItems = items.filter((i) => i.isOffice);
+    const openCount = branchItems.filter((i) => i.stillOpen).length;
+    const withChecklist = branchItems.filter((i) => i.checklistAt).length;
+    const avgStay = avg(branchItems.filter((i) => !i.stillOpen).map((i) => i.durationMinutes));
+    const avgChecklistLag = avg(branchItems.map((i) => i.checklistAfterCheckInMinutes));
+    const avgChecklistFill = avg(branchItems.map((i) => i.checklistFillMinutes));
+    const avgAfterChecklist = avg(
+      branchItems.filter((i) => !i.stillOpen).map((i) => i.checklistToCheckoutMinutes),
+    );
+    const officeTotal = sum(officeItems.map((i) => i.durationMinutes));
+    const officeAvg = avg(officeItems.filter((i) => !i.stillOpen).map((i) => i.durationMinutes));
+
+    res.json({
+      items,
+      epoch: CHECKLIST_EPOCH,
+      summary: {
+        total: branchItems.length,
+        openCount,
+        withChecklist,
+        noChecklist: branchItems.filter((i) => !i.stillOpen && !i.checklistAt).length,
+        blockedCount: branchItems.filter((i) => i.presenceBlocked).length,
+        unlockPendingCount: branchItems.filter((i) => i.unlockPending).length,
+        frozenCount: branchItems.filter((i) => i.stayFrozen).length,
+        avgStayMinutes: avgStay,
+        avgStayLabel: formatDurationMinutes(avgStay),
+        avgChecklistLagMinutes: avgChecklistLag,
+        avgChecklistLagLabel: formatDurationMinutes(avgChecklistLag),
+        avgChecklistFillMinutes: avgChecklistFill,
+        avgChecklistFillLabel: formatDurationMinutes(avgChecklistFill),
+        avgAfterChecklistMinutes: avgAfterChecklist,
+        avgAfterChecklistLabel: formatDurationMinutes(avgAfterChecklist),
+        officeCount: officeItems.length,
+        officeOpenCount: officeItems.filter((i) => i.stillOpen).length,
+        officeTotalMinutes: officeTotal,
+        officeTotalLabel: formatDurationMinutes(officeItems.length ? officeTotal : null),
+        officeAvgMinutes: officeAvg,
+        officeAvgLabel: formatDurationMinutes(officeAvg),
+      },
+    });
+  } catch (err) {
+    console.error("GET /branch-audits/visit-monitor error:", err);
+    res.status(503).json({ error: "Monitoring yuklanmadi" });
+  }
+});
+
+router.get("/branch-audits/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!requireRole(req, VIEW_ROLES)) {
+    res.status(403).json({ error: "Ruxsat yo'q" });
+    return;
+  }
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(404).json({ error: "Topilmadi" });
+    return;
+  }
+  const [row] = await db.select().from(branchAuditsTable).where(eq(branchAuditsTable.id, id));
+  if (!row) {
+    res.status(404).json({ error: "Topilmadi" });
+    return;
+  }
+  if (
+    req.userRole === "koordinator" &&
+    req.userId &&
+    row.coordinatorId !== req.userId
+  ) {
+    res.status(403).json({ error: "Ruxsat yo'q" });
+    return;
+  }
+  res.json(await enrich(row));
+});
+
+/** Yangi audit saqlash */
+router.post("/branch-audits", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!requireRole(req, WRITE_ROLES)) {
+    res.status(403).json({ error: "Faqat koordinator saqlay oladi" });
+    return;
+  }
+
+  const managerEmployeeId = parseInt(String(req.body?.managerEmployeeId ?? ""), 10);
+  const visitDate = String(req.body?.visitDate || "").trim();
+  const monthLabel = req.body?.monthLabel ? String(req.body.monthLabel).trim() : null;
+  const generalNote = req.body?.generalNote ? String(req.body.generalNote).trim() : null;
+  const categories = sanitizeCategories(req.body?.categories);
+  const checkLat = req.body?.checkLatitude != null ? Number(req.body.checkLatitude) : NaN;
+  const checkLng = req.body?.checkLongitude != null ? Number(req.body.checkLongitude) : NaN;
+
+  if (!managerEmployeeId || Number.isNaN(managerEmployeeId)) {
+    res.status(400).json({ error: "Filialni tanlang" });
+    return;
+  }
+  if (!visitDate || !/^\d{4}-\d{2}-\d{2}$/.test(visitDate)) {
+    res.status(400).json({ error: "Tashrif sanasini belgilang" });
+    return;
+  }
+  if (!categories.length) {
+    res.status(400).json({ error: "Cheklist bo'sh" });
+    return;
+  }
+
+  const score = computeScore(categories);
+  if (score.answeredCount === 0) {
+    res.status(400).json({ error: "Kamida bitta talabga Ha yoki Yo'q belgilang" });
+    return;
+  }
+
+  const [manager] = await db
+    .select({
+      fullName: employeesTable.fullName,
+      location: employeesTable.location,
+      orgRole: employeesTable.orgRole,
+      reportsToId: employeesTable.reportsToId,
+      latitude: employeesTable.latitude,
+      longitude: employeesTable.longitude,
+    })
+    .from(employeesTable)
+    .where(eq(employeesTable.id, managerEmployeeId));
+
+  if (!manager || manager.orgRole !== "manager") {
+    res.status(400).json({ error: "Filial (mudir) topilmadi" });
+    return;
+  }
+
+  // Koordinator faqat o'z filiallariga yozadi
+  if (req.userRole === "koordinator" && req.userId) {
+    const coordRows = await db
+      .select({ id: employeesTable.id, orgRole: employeesTable.orgRole })
+      .from(employeesTable)
+      .where(eq(employeesTable.userId, req.userId));
+    const owns = coordRows.some((r) => r.id === manager.reportsToId);
+    if (!owns) {
+      res.status(403).json({ error: "Bu filial sizga biriktirilmagan" });
+      return;
+    }
+    const visitGate = await assertChecklistAllowedForCoordinator({
+      userId: req.userId,
+      branchId: managerEmployeeId,
+    });
+    if (!visitGate.ok) {
+      res.status(visitGate.status).json({
+        error: visitGate.error,
+        code: visitGate.code,
+      });
+      return;
+    }
+  }
+
+  /** Oyiga 1 filialga max 4 tashrif — tizim o‘zi raqamlaydi */
+  const monthPrefix = visitDate.slice(0, 7);
+  const monthAudits = await db
+    .select({ id: branchAuditsTable.id, visitDate: branchAuditsTable.visitDate })
+    .from(branchAuditsTable)
+    .where(eq(branchAuditsTable.managerEmployeeId, managerEmployeeId));
+  const visitsThisMonth = monthAudits.filter((a) =>
+    String(a.visitDate || "").startsWith(monthPrefix),
+  );
+  if (visitsThisMonth.length >= 4) {
+    res.status(400).json({
+      error: "Bu oyda ushbu filialga 4 ta tashrif allaqachon saqlangan",
+      code: "month_visit_limit",
+      visitCount: visitsThisMonth.length,
+      maxVisits: 4,
+    });
+    return;
+  }
+  const sameDayVisit = monthAudits.some((a) => String(a.visitDate || "") === visitDate);
+  if (sameDayVisit) {
+    res.status(400).json({
+      error: "Bugun uchun bu filialga tashrif bo‘ldi — boshqasini tanlang",
+      code: "same_day_visit",
+    });
+    return;
+  }
+  const visitName = `${visitsThisMonth.length + 1}-tashrif`;
+
+  let distanceMeters: number | null = null;
+  let savedCheckLat: number | null = null;
+  let savedCheckLng: number | null = null;
+
+  const fromLoc = gpsFromLocationField(manager.location);
+  const branchLat = manager.latitude ?? fromLoc?.lat ?? null;
+  const branchLng = manager.longitude ?? fromLoc?.lng ?? null;
+
+  // Koordinator: filial GPS dan 70 m ichida (test ofis koordinator — asosiy ofis yashil zona)
+  if (req.userRole === "koordinator") {
+    if (Number.isNaN(checkLat) || Number.isNaN(checkLng)) {
+      res.status(400).json({
+        error: "GPS yoqilmagan — joylashuvingizni ruxsat bering",
+      });
+      return;
+    }
+    savedCheckLat = checkLat;
+    savedCheckLng = checkLng;
+
+    const isTestOffice = await isTestOfficeCoordinatorUserId(req.userId);
+    if (isTestOffice) {
+      const officeDist = haversineMeters(checkLat, checkLng, TEST_OFFICE_LAT, TEST_OFFICE_LNG);
+      const officeAllowed = 100 + 8;
+      if (officeDist > officeAllowed) {
+        res.status(403).json({
+          error: `Ofis yashil hududidan tashqaridasiz: ${officeDist} m (ruxsat ~100 m). Asosiy ofisga boring.`,
+          distanceMeters: officeDist,
+          remainMeters: officeDist - 100,
+          allowedMeters: 100,
+          code: "outside_office_geofence",
+        });
+        return;
+      }
+      distanceMeters = officeDist;
+    } else {
+      if (branchLat == null || branchLng == null) {
+        res.status(400).json({
+          error: "Filial lokatsiyasi bazada yo‘q — Aptekalar tarmog‘ida koordinata saqlang",
+        });
+        return;
+      }
+      distanceMeters = haversineMeters(checkLat, checkLng, branchLat, branchLng);
+      if (distanceMeters > AUDIT_GEOFENCE_METERS) {
+        const remain = distanceMeters - AUDIT_GEOFENCE_METERS;
+        res.status(403).json({
+          error: `Filialdan uzoqdasiz: ${distanceMeters} m. Yana ${remain} m yaqinlashishingiz kerak (ruxsat: ${AUDIT_GEOFENCE_METERS} m).`,
+          distanceMeters,
+          remainMeters: remain,
+          allowedMeters: AUDIT_GEOFENCE_METERS,
+        });
+        return;
+      }
+    }
+  }
+
+  const [coordUser] = await db
+    .select({ fullName: usersTable.fullName })
+    .from(usersTable)
+    .where(eq(usersTable.id, req.userId!));
+
+  try {
+    const [created] = await db
+      .insert(branchAuditsTable)
+      .values({
+        managerEmployeeId,
+        branchLocation: displayBranchName(manager.location) || manager.fullName,
+        managerName: manager.fullName,
+        visitDate,
+        visitName,
+        monthLabel,
+        coordinatorId: req.userId!,
+        coordinatorName: coordUser?.fullName || null,
+        generalNote,
+        categories,
+        ...score,
+        checkLatitude: savedCheckLat,
+        checkLongitude: savedCheckLng,
+        distanceMeters,
+        status: "saved",
+      })
+      .returning();
+
+    if (req.userRole === "koordinator" && req.userId && created) {
+      try {
+        const startedRaw = req.body?.startedAt ? new Date(String(req.body.startedAt)) : null;
+        await attachChecklistToOpenVisit({
+          coordinatorUserId: req.userId,
+          branchId: managerEmployeeId,
+          auditId: created.id,
+          startedAt: startedRaw && Number.isFinite(startedRaw.getTime()) ? startedRaw : null,
+        });
+      } catch (e) {
+        console.error("attach checklist to visit error:", e);
+      }
+
+      try {
+        const purge = await maybePurgeTestCoordinatorAfterVisit(req.userId);
+        if (purge.purged) {
+          res.status(201).json({
+            ...(await enrich(created)),
+            testCoordinatorPurged: true,
+            testCoordinatorMessage: `${TEST_COORD_MAX_VISITS} ta tashrif yakunlandi — test koordinator bazadan o‘chirildi.`,
+          });
+          return;
+        }
+      } catch (e) {
+        console.error("test coordinator purge error:", e);
+      }
+    }
+
+    res.status(201).json(await enrich(created));
+  } catch (err: any) {
+    if (err?.code === "23505" || err?.cause?.code === "23505") {
+      res.status(400).json({
+        error: "Bugun uchun bu filialga tashrif bo‘ldi — boshqasini tanlang",
+        code: "same_day_visit",
+      });
+      return;
+    }
+    console.error("POST /branch-audits error:", err);
+    res.status(500).json({ error: "Cheklist saqlanmadi" });
+  }
+});
+
+/** Yangilash */
+router.patch("/branch-audits/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!requireRole(req, WRITE_ROLES)) {
+    res.status(403).json({ error: "Ruxsat yo'q" });
+    return;
+  }
+  const id = parseInt(String(req.params.id), 10);
+  const [existing] = await db.select().from(branchAuditsTable).where(eq(branchAuditsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Topilmadi" });
+    return;
+  }
+  if (
+    req.userRole === "koordinator" &&
+    req.userId &&
+    existing.coordinatorId !== req.userId
+  ) {
+    res.status(403).json({ error: "Faqat o'z auditini tahrirlashingiz mumkin" });
+    return;
+  }
+
+  const categories =
+    req.body?.categories !== undefined
+      ? sanitizeCategories(req.body.categories)
+      : (existing.categories as AuditCategory[]);
+  const score = computeScore(categories);
+
+  const nextVisitDate = req.body?.visitDate
+    ? String(req.body.visitDate).trim()
+    : existing.visitDate;
+  if (
+    nextVisitDate &&
+    nextVisitDate !== existing.visitDate &&
+    /^\d{4}-\d{2}-\d{2}$/.test(nextVisitDate)
+  ) {
+    const [clash] = await db
+      .select({ id: branchAuditsTable.id })
+      .from(branchAuditsTable)
+      .where(
+        and(
+          eq(branchAuditsTable.managerEmployeeId, existing.managerEmployeeId),
+          eq(branchAuditsTable.visitDate, nextVisitDate),
+        ),
+      )
+      .limit(1);
+    if (clash) {
+      res.status(400).json({
+        error: "Bu sanada ushbu filialga cheklist allaqachon bor",
+        code: "same_day_visit",
+      });
+      return;
+    }
+  }
+
+  try {
+    const [updated] = await db
+      .update(branchAuditsTable)
+      .set({
+        visitDate: nextVisitDate,
+        visitName: req.body?.visitName
+          ? String(req.body.visitName).trim()
+          : existing.visitName,
+        monthLabel:
+          req.body?.monthLabel !== undefined
+            ? String(req.body.monthLabel || "").trim() || null
+            : existing.monthLabel,
+        generalNote:
+          req.body?.generalNote !== undefined
+            ? String(req.body.generalNote || "").trim() || null
+            : existing.generalNote,
+        categories,
+        ...score,
+      })
+      .where(eq(branchAuditsTable.id, id))
+      .returning();
+
+    res.json(await enrich(updated));
+  } catch (err: any) {
+    if (err?.code === "23505" || err?.cause?.code === "23505") {
+      res.status(400).json({
+        error: "Bu sanada ushbu filialga cheklist allaqachon bor",
+        code: "same_day_visit",
+      });
+      return;
+    }
+    console.error("PATCH /branch-audits error:", err);
+    res.status(500).json({ error: "Yangilanmadi" });
+  }
+});
+
+router.delete("/branch-audits/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!requireRole(req, WRITE_ROLES)) {
+    res.status(403).json({ error: "Ruxsat yo'q" });
+    return;
+  }
+  const id = parseInt(String(req.params.id), 10);
+  const [existing] = await db.select().from(branchAuditsTable).where(eq(branchAuditsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Topilmadi" });
+    return;
+  }
+  if (
+    req.userRole === "koordinator" &&
+    req.userId &&
+    existing.coordinatorId !== req.userId
+  ) {
+    res.status(403).json({ error: "Ruxsat yo'q" });
+    return;
+  }
+  await db.delete(branchAuditsTable).where(eq(branchAuditsTable.id, id));
+  res.status(204).end();
+});
+
+export default router;

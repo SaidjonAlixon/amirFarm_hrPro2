@@ -1,0 +1,175 @@
+import React, { useMemo, useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
+import { canViewHolat } from "../../lib/roles";
+import { downloadHolatExcel, useHolat } from "../../lib/holat-api";
+import { useCoordinatorHisobot } from "../../lib/hisobot-api";
+import { downloadHisobotPdf } from "../../lib/hisobot-pdf";
+import { Button } from "../../components/ui/button";
+import { Skeleton } from "../../components/ui/skeleton";
+import { HisobotPanel, daysAgoYmd, todayYmd } from "./hisobot-panel";
+import { HolatDashboardPanel } from "./holat-dashboard";
+import { BarChart3, Download, FileText, Loader2 } from "lucide-react";
+import { useToast } from "../../hooks/use-toast";
+import { useI18n } from "../../i18n/I18nProvider";
+
+export default function AdminHolatPage() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const { t } = useI18n();
+  const allowed = canViewHolat(user?.role);
+  const { data, isLoading, error, refetch } = useHolat(allowed);
+  const [exporting, setExporting] = useState(false);
+  const [pdfing, setPdfing] = useState(false);
+  const [dashCoordKey, setDashCoordKey] = useState<string>("");
+  const [from, setFrom] = useState(() => daysAgoYmd(29));
+  const [to, setTo] = useState(() => todayYmd());
+
+  const coordId = useMemo(() => {
+    const all = (data?.coordinators ?? []).filter((c) => c.employeeId != null);
+    if (dashCoordKey && all.some((c) => String(c.employeeId) === dashCoordKey)) {
+      return Number(dashCoordKey);
+    }
+    if (data?.scoped && all[0]?.employeeId != null) return all[0].employeeId;
+    return null;
+  }, [data, dashCoordKey]);
+  const reportQ = useCoordinatorHisobot(coordId, from, to, Boolean(coordId));
+
+  async function onExportExcel() {
+    if (!data) return;
+    setExporting(true);
+    await new Promise((r) => window.setTimeout(r, 40));
+    try {
+      const id =
+        dashCoordKey && dashCoordKey !== "all"
+          ? Number(dashCoordKey)
+          : data.scoped && data.coordinators[0]?.employeeId
+            ? data.coordinators[0].employeeId
+            : null;
+      await downloadHolatExcel(
+        data,
+        "sonlar",
+        id != null && Number.isFinite(id) ? id : null,
+      );
+      toast({
+        title: "Excel yuklandi",
+        description: id
+          ? "Tanlangan koordinator: filial, mudir va xodimlar"
+          : "Barcha koordinatorlar",
+      });
+    } catch (e: any) {
+      toast({ title: "Excel xato", description: e.message || String(e), variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function onExportPdf() {
+    if (!reportQ.data) {
+      toast({
+        title: "PDF uchun koordinator kerak",
+        description: "Avval koordinatorni tanlang va hisobot yuklansin.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setPdfing(true);
+    try {
+      await downloadHisobotPdf(reportQ.data);
+      toast({ title: "PDF yuklandi", description: reportQ.data.coordinator.fullName });
+    } catch (e: any) {
+      toast({ title: "PDF xato", description: e.message || String(e), variant: "destructive" });
+    } finally {
+      setPdfing(false);
+    }
+  }
+
+  if (!allowed) {
+    return <p className="p-6 text-sm text-muted-foreground">{t("admin.holat.restricted")}</p>;
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3 p-1">
+        <Skeleton className="h-24 w-full rounded-2xl" />
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-24 rounded-2xl" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+        {(error as Error)?.message || t("admin.holat.loadErr")}
+        <Button className="ml-3" size="sm" variant="outline" onClick={() => void refetch()}>
+          {t("ui.retry")}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5 pb-10">
+      <div className="hero-dark relative overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-[#0b3a5c] via-[#0f4a73] to-[#163a55] p-5 shadow-md">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <span className="rounded-xl bg-white/15 p-2.5 ring-1 ring-white/20">
+              <BarChart3 className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-sky-100/90">
+                {t("admin.holat.settings")}
+              </p>
+              <h1 className="text-2xl font-semibold text-white">{t("admin.holat")}</h1>
+              <p className="mt-1 max-w-2xl text-sm text-sky-50/90">
+                {t("admin.holat.subtitle")}
+                {data.scoped ? ` ${t("admin.holat.scoped")}` : ` ${t("admin.holat.full")}`}{" "}
+                {t("admin.holat.updated")} {data.generatedAt}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              disabled={pdfing || !reportQ.data}
+              onClick={() => void onExportPdf()}
+              className="h-11 shrink-0 gap-2 rounded-xl bg-card px-5 text-sm font-semibold text-[#0b3a5c] shadow-sm hover:bg-sky-50 disabled:opacity-60"
+            >
+              {pdfing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+              PDF yuklash
+            </Button>
+            <Button
+              type="button"
+              disabled={exporting}
+              onClick={() => void onExportExcel()}
+              variant="outline"
+              className="h-11 shrink-0 gap-2 rounded-xl border-white/30 bg-white/10 px-5 text-sm font-semibold text-white hover:bg-white/20"
+            >
+              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {t("admin.holat.excel")}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <HolatDashboardPanel
+        data={data}
+        coordKey={data.scoped ? "" : dashCoordKey}
+        onCoordKey={setDashCoordKey}
+      />
+
+      <HisobotPanel
+        data={data}
+        coordKey={dashCoordKey}
+        onCoordKey={setDashCoordKey}
+        from={from}
+        to={to}
+        onFrom={setFrom}
+        onTo={setTo}
+      />
+    </div>
+  );
+}

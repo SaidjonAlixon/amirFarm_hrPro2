@@ -1,0 +1,704 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+export type PharmacyStaffRole = "mudir" | "farmasevt" | "stajyor";
+
+export type PharmacyStaffInput = {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  role: PharmacyStaffRole;
+  location?: string;
+  managerEmployeeId?: number;
+};
+
+export type PharmacyStaffResult = {
+  id: number;
+  fullName: string;
+  role: string;
+  login: string;
+  phone: string | null;
+  temporaryPassword: string;
+  employeeId: number;
+  orgRole: string | null;
+  location: string | null;
+};
+
+export type BranchGpsResult = {
+  id: number;
+  location: string | null;
+  latitude: number | null;
+  longitude: number | null;
+};
+
+function toNum(v: string): number {
+  return Number(String(v).replace(",", "."));
+}
+
+function dmsToDecimal(deg: number, min: number, sec: number, hemi?: string): number {
+  let v = Math.abs(deg) + min / 60 + sec / 3600;
+  const h = (hemi || "").toUpperCase();
+  if (h === "S" || h === "W" || h === "Ю" || h === "З") v = -v;
+  if (deg < 0) v = -Math.abs(v);
+  return v;
+}
+
+/** Namuna: 41°18'23.3"N 69°18'28.0"E */
+export function parseGpsText(raw: string): { lat: number; lng: number } | null {
+  const s = String(raw || "")
+    .trim()
+    .replace(/\u00a0/g, " ")
+    .replace(/[′’ʻ`]/g, "'")
+    .replace(/[″“”«»]/g, '"')
+    .replace(/[˚º]/g, "°");
+  if (!s) return null;
+
+  const dms =
+    /(\d{1,3})\s*°\s*(\d{1,2})\s*'?\s*(\d{1,2}(?:[.,]\d+)?)?\s*"?\s*([NSnsСсЮю])?[,;\s]+(\d{1,3})\s*°\s*(\d{1,2})\s*'?\s*(\d{1,2}(?:[.,]\d+)?)?\s*"?\s*([EWewВвЗз])?/;
+  const m = s.match(dms);
+  if (m) {
+    const lat = dmsToDecimal(toNum(m[1]!), toNum(m[2]!), toNum(m[3] || "0"), m[4]);
+    const lng = dmsToDecimal(toNum(m[5]!), toNum(m[6]!), toNum(m[7] || "0"), m[8]);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      return { lat, lng };
+    }
+  }
+
+  const dec = /(-?\d{1,3}(?:[.,]\d+))\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+))/;
+  const d = s.match(dec);
+  if (d) {
+    const lat = toNum(d[1]!);
+    const lng = toNum(d[2]!);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      return { lat, lng };
+    }
+  }
+  return null;
+}
+
+const GPS_SUFFIX = /\s*[|·｜│]?\s*gps:\s*(-?\d+(?:\.\d+)?)\s*(?:,\s*(-?\d+(?:\.\d+)?))?\s*$/i;
+const GPS_INLINE = /(?:\r?\n|\s)*[|·｜│]?\s*gps:\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)?/gi;
+
+export function stripGpsSuffix(location: string | null | undefined): string {
+  let s = String(location || "")
+    .replace(/\u00a0/g, " ")
+    .replace(GPS_INLINE, "")
+    .replace(GPS_SUFFIX, "")
+    .replace(/\s*[|·｜│]\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(s)) return "";
+  return s;
+}
+
+const BRANCH_NAME_FIX: Record<string, string> = {
+  азия: "ТАШСЕЛМАШ",
+  азія: "ТАШСЕЛМАШ",
+  azia: "ТАШСЕЛМАШ",
+  asia: "ТАШСЕЛМАШ",
+};
+
+export function displayBranchName(location: string | null | undefined): string {
+  const raw = stripGpsSuffix(location);
+  return BRANCH_NAME_FIX[raw.toLowerCase()] || raw;
+}
+
+export function gpsFromLocationField(
+  location: string | null | undefined,
+): { lat: number; lng: number } | null {
+  const m = String(location || "").match(GPS_SUFFIX);
+  if (m) {
+    const lat = Number(m[1]);
+    const lng = Number(m[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  }
+  return parseGpsText(stripGpsSuffix(location));
+}
+
+export function withGpsSuffix(
+  name: string | null | undefined,
+  lat: number,
+  lng: number,
+): string {
+  const base = displayBranchName(name);
+  const label = !base || base === "Filial" ? "Filial" : base;
+  return `${label} |gps:${lat.toFixed(6)},${lng.toFixed(6)}`;
+}
+
+export function gpsInputError(raw: string): string | null {
+  const s = String(raw || "").trim();
+  if (!s) return `Koordinatani yozing: 41°18'23.3"N 69°18'28.0"E`;
+  if (parseGpsText(s)) return null;
+  const hasN = /[NnСс]/.test(s) || s.includes("°");
+  const hasE = /[EeВв]/.test(s);
+  if (hasN && !hasE) {
+    return `Uzunlik ham kerak. To‘liq yozing: 41°18'23.3"N 69°18'28.0"E`;
+  }
+  return `Ikkala tomonni ham yozing: 41°18'23.3"N 69°18'28.0"E`;
+}
+
+async function readError(res: Response): Promise<string> {
+  try {
+    const body = await res.json();
+    if (body?.error) return String(body.error);
+  } catch {
+    /* ignore */
+  }
+  if (res.status === 404) return "Not Found";
+  return res.statusText || `Xato ${res.status}`;
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
+    ...init,
+  });
+  if (!res.ok) {
+    throw new Error(await readError(res));
+  }
+  return res.json() as Promise<T>;
+}
+
+export type EmployeeProfilePatch = {
+  employeeId: number;
+  firstName?: string;
+  lastName?: string;
+  fullName?: string;
+  phone?: string;
+  shiftType?: string;
+  shiftLabel?: string | null;
+  employmentStatus?: string;
+};
+
+export function usePatchEmployeeProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: EmployeeProfilePatch) => {
+      const { employeeId, ...body } = data;
+      return apiFetch(`/employees/${employeeId}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["holat"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+      qc.invalidateQueries({
+        predicate: (q) => JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+async function saveViaEmployeesPatch(
+  employeeId: number,
+  coordinates: string,
+  keepLocation?: string | null,
+): Promise<BranchGpsResult> {
+  const parsed = parseGpsText(coordinates);
+  if (!parsed) {
+    throw new Error(gpsInputError(coordinates) || "Koordinata noto‘g‘ri");
+  }
+  const encoded = withGpsSuffix(keepLocation, parsed.lat, parsed.lng);
+  const patch = async (body: Record<string, unknown>) =>
+    fetch(`/api/employees/${employeeId}`, {
+      credentials: "include",
+      method: "PATCH",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+  let res = await patch({
+    location: encoded,
+    latitude: parsed.lat,
+    longitude: parsed.lng,
+    coordinates,
+  });
+  if (!res.ok && (res.status === 400 || res.status === 403 || res.status === 404)) {
+    res = await patch({ location: encoded });
+  }
+  if (!res.ok) {
+    throw new Error(await readError(res));
+  }
+  const emp = (await res.json()) as { id: number; location?: string | null };
+  return {
+    id: emp.id,
+    location: stripGpsSuffix(emp.location ?? keepLocation) || null,
+    latitude: parsed.lat,
+    longitude: parsed.lng,
+  };
+}
+
+export function useSaveManagerLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      employeeId: number;
+      coordinates: string;
+      branchName?: string | null;
+      keepLocation?: string | null;
+    }) => {
+      const name = (data.branchName ?? data.keepLocation ?? "").trim();
+      // Nom + mavjud GPS: koordinata bo‘sh bo‘lishi mumkin
+      if (data.coordinates.trim()) {
+        const bad = gpsInputError(data.coordinates);
+        if (bad) throw new Error(bad);
+      }
+
+      const tryPost = async (path: string) =>
+        fetch(`/api${path}`, {
+          credentials: "include",
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            employeeId: data.employeeId,
+            coordinates: data.coordinates,
+            branchName: name || null,
+          }),
+        });
+
+      try {
+        const first = await tryPost("/pharmacy-network/location");
+        if (first.ok) return (await first.json()) as BranchGpsResult;
+        if (first.status === 404) {
+          const nested = await tryPost(`/pharmacy-network/managers/${data.employeeId}/location`);
+          if (nested.ok) return (await nested.json()) as BranchGpsResult;
+        }
+        if (!first.ok) throw new Error(await readError(first));
+      } catch (err) {
+        if (err instanceof Error && err.message && !/fetch|network/i.test(err.message)) {
+          throw err;
+        }
+      }
+
+      return saveViaEmployeesPatch(
+        data.employeeId,
+        data.coordinates,
+        name || data.keepLocation,
+      );
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({
+        predicate: (q) => JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+export type BranchAccount = {
+  role: "mudir" | "farmasevt" | "stajyor";
+  fullName: string;
+  login: string;
+  temporaryPassword: string;
+  employeeId: number;
+};
+
+export type ActiveBranchInfo = {
+  employeeId: number;
+  branchNo: number | null;
+  branchName: string;
+  coordinatorName: string | null;
+  mudirName: string | null;
+};
+
+export type BranchInputCheck = {
+  no: {
+    value: number;
+    label: string;
+    free: boolean;
+    holder: ActiveBranchInfo | null;
+    catalogName: string | null;
+  } | null;
+  sameName: ActiveBranchInfo[];
+  catalogNoForName: number | null;
+  nextFreeNo: number;
+};
+
+/** Filial raqami/nomi bandligini jonli tekshirish. */
+export function useBranchInputCheck(branchNo: string, branchName: string, enabled: boolean) {
+  const no = branchNo.trim();
+  const name = branchName.trim();
+  return useQuery({
+    queryKey: ["pharmacy-branch-check", no, name],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (no) qs.set("no", no);
+      if (name.length >= 2) qs.set("name", name);
+      return apiFetch<BranchInputCheck>(`/pharmacy-network/branches/check?${qs.toString()}`);
+    },
+    enabled,
+    staleTime: 10_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useCreatePharmacyBranch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      coordinatorEmployeeId: number;
+      branchName: string;
+      branchNo: number;
+      coordinates: string;
+      mudir: { firstName: string; lastName: string; phone: string };
+      staff: Array<{ role: "farmasevt" | "stajyor"; firstName: string; lastName: string; phone: string }>;
+    }) =>
+      apiFetch<{
+        ok: true;
+        branchName: string;
+        coordinatorName: string;
+        employeeId: number;
+        accounts: BranchAccount[];
+      }>("/pharmacy-network/branches", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["staff"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-branch-check"] });
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({
+        predicate: (q) => JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+export function useTransferPharmacyBranch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { employeeId: number; coordinatorEmployeeId: number }) =>
+      apiFetch<{
+        ok: true;
+        branchName: string;
+        fromCoordinator: string;
+        toCoordinator: string;
+        message: string;
+      }>("/pharmacy-network/branches/transfer", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["davomat"] });
+      qc.invalidateQueries({
+        predicate: (q) => JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+export function useRemovePharmacyBranch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (employeeId: number) =>
+      apiFetch<{ ok: true; branchName: string; dismissed: string[]; message: string }>(
+        "/pharmacy-network/branches/remove",
+        { method: "POST", body: JSON.stringify({ employeeId }) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["staff"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-branch-check"] });
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["davomat"] });
+      qc.invalidateQueries({
+        predicate: (q) => JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+export function useCreatePharmacyStaff() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: PharmacyStaffInput) =>
+      apiFetch<PharmacyStaffResult>("/pharmacy-network/staff", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+      qc.invalidateQueries({
+        predicate: (q) =>
+          JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+export type HardDeletePharmacyResult = {
+  ok: true;
+  kind: "filial" | "mudir" | "staff";
+  fullName: string;
+  deletedEmployees: number;
+  deletedUsers: number;
+  message: string;
+};
+
+export function useHardDeletePharmacyEmployee() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      employeeId: number;
+      userId?: number | null;
+      fullName?: string | null;
+      scope?: "person" | "branch";
+    }) =>
+      apiFetch<HardDeletePharmacyResult>(`/pharmacy-network/hard-delete`, {
+        method: "POST",
+        body: JSON.stringify({
+          employeeId: data.employeeId,
+          userId: data.userId ?? null,
+          fullName: data.fullName ?? null,
+          scope: data.scope ?? "person",
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+      qc.invalidateQueries({ queryKey: ["/api/staffing/alerts"] });
+      qc.invalidateQueries({
+        predicate: (q) =>
+          JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+export type CleanupDuplicateBranchesResult = {
+  ok: true;
+  removedCount: number;
+  removed: Array<{ id: number; fullName: string; deletedEmployees: number }>;
+  message: string;
+};
+
+/** Bir xil nomdagi dublikat (mudirsiz) filiallarni o‘chirish */
+export function useCleanupDuplicateBranches() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data?: { name?: string; purgeEmptyBranches?: boolean }) =>
+      apiFetch<CleanupDuplicateBranchesResult>(
+        `/pharmacy-network/cleanup-duplicate-branches`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: data?.name ?? "",
+            purgeEmptyBranches: data?.purgeEmptyBranches === true,
+          }),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+      qc.invalidateQueries({ queryKey: ["/api/staffing/alerts"] });
+      qc.invalidateQueries({ queryKey: ["smena-me"] });
+      qc.invalidateQueries({ queryKey: ["smena-slots-all"] });
+    },
+  });
+}
+
+export type DismissPharmacyResult = {
+  ok: true;
+  kind: "mudir" | "staff";
+  fullName: string;
+  placeholderId?: number;
+  message: string;
+};
+
+export function useDismissPharmacyEmployee() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { employeeId: number }) =>
+      apiFetch<DismissPharmacyResult>(`/pharmacy-network/dismiss`, {
+        method: "POST",
+        body: JSON.stringify({ employeeId: data.employeeId }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+      qc.invalidateQueries({ queryKey: ["/api/staffing/alerts"] });
+      qc.invalidateQueries({ queryKey: ["davomat"] });
+      qc.invalidateQueries({ queryKey: ["davomat-analytics"] });
+      qc.invalidateQueries({
+        predicate: (q) => {
+          const key = JSON.stringify(q.queryKey).toLowerCase();
+          return (
+            key.includes("employee") ||
+            key.includes("davomat") ||
+            key.includes("staff") ||
+            key.includes("pharmacy")
+          );
+        },
+      });
+    },
+  });
+}
+
+export type ChangePharmacyRoleResult = {
+  ok: true;
+  fullName: string;
+  orgRole: "manager" | "pharmacist" | "intern";
+  message: string;
+};
+
+export function useChangePharmacyOrgRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      employeeId: number;
+      newOrgRole: "manager" | "pharmacist" | "intern";
+    }) =>
+      apiFetch<ChangePharmacyRoleResult>(`/pharmacy-network/change-role`, {
+        method: "POST",
+        body: JSON.stringify({
+          employeeId: data.employeeId,
+          newOrgRole: data.newOrgRole,
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+      qc.invalidateQueries({ queryKey: ["/api/staffing/alerts"] });
+      qc.invalidateQueries({
+        predicate: (q) =>
+          JSON.stringify(q.queryKey).toLowerCase().includes("employee"),
+      });
+    },
+  });
+}
+
+export type PharmacyOrgRole = "manager" | "pharmacist" | "intern";
+
+export type MovePharmacyStaffInput = {
+  employeeId: number;
+  targetBranchId: number;
+  newOrgRole: PharmacyOrgRole;
+  displaced?: { targetBranchId: number; newOrgRole: PharmacyOrgRole } | null;
+};
+
+export type MovePharmacyStaffResult = { ok: true; message: string; steps: string[] };
+
+export function useMovePharmacyStaff() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: MovePharmacyStaffInput) =>
+      apiFetch<MovePharmacyStaffResult>(`/pharmacy-network/move-staff`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/employees"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+      qc.invalidateQueries({ queryKey: ["/api/staffing/alerts"] });
+      qc.invalidateQueries({ queryKey: ["davomat"] });
+      qc.invalidateQueries({ queryKey: ["smena-me"] });
+      qc.invalidateQueries({ queryKey: ["smena-slots-all"] });
+      qc.invalidateQueries({
+        predicate: (q) => {
+          const key = JSON.stringify(q.queryKey).toLowerCase();
+          return key.includes("employee") || key.includes("staff") || key.includes("pharmacy");
+        },
+      });
+    },
+  });
+}
+
+export type MudirCredential = {
+  employeeId: number;
+  fullName: string;
+  location: string;
+  login: string;
+  password: string;
+};
+
+export type StaffLoginCredential = MudirCredential & {
+  userId?: number | null;
+  roleLabel: string;
+  mudirName: string;
+};
+
+export function useOwnMudirCredentials(enabled: boolean) {
+  return useQuery({
+    queryKey: ["pharmacy-mudirs"],
+    queryFn: () => apiFetch<MudirCredential[]>("/pharmacy-network/mudirs"),
+    enabled,
+  });
+}
+
+export function useOwnStaffLogins(enabled: boolean) {
+  return useQuery({
+    queryKey: ["pharmacy-staff-logins"],
+    queryFn: () => apiFetch<StaffLoginCredential[]>("/pharmacy-network/staff-logins"),
+    enabled,
+  });
+}
+
+export function usePatchNetworkCredentials() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { employeeId: number; login: string; password: string }) =>
+      apiFetch<{ employeeId: number; userId: number; login: string; password: string }>(
+        `/pharmacy-network/credentials/${data.employeeId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ login: data.login, password: data.password }),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pharmacy-mudirs"] });
+      qc.invalidateQueries({ queryKey: ["pharmacy-staff-logins"] });
+    },
+  });
+}
+
+async function downloadExcel(path: string, fallbackName: string) {
+  const res = await fetch(`/api${path}`, { credentials: "include" });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.error) message = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message || "Excel yuklanmadi");
+  }
+  const blob = await res.blob();
+  const stamp = new Date().toISOString().slice(0, 10);
+  const filename = fallbackName.includes("DATE")
+    ? fallbackName.replace("DATE", stamp)
+    : fallbackName;
+  const { deliverFile } = await import("./tg-download");
+  return deliverFile(blob, filename);
+}
+
+export async function downloadOwnMudirsExcel() {
+  await downloadExcel("/pharmacy-network/mudirs/export", "tarmoq-login-DATE.xlsx");
+}
+
+export async function downloadOwnStaffExcel() {
+  await downloadExcel("/pharmacy-network/staff-logins/export", "filial-xodimlar-login-DATE.xlsx");
+}

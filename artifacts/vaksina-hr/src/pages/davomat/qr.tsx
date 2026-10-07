@@ -1,0 +1,1111 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  CheckCircle2,
+  Download,
+  FileImage,
+  FileText,
+  Loader2,
+  QrCode,
+  RefreshCw,
+  ScanFace,
+  ScanLine,
+  Search,
+  Trash2,
+  XCircle,
+} from "lucide-react";
+import { Link } from "wouter";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import { useToast } from "../../hooks/use-toast";
+import { useAuth } from "../../contexts/AuthContext";
+import { QrScanDialog, primeQrCamera } from "../../components/QrScanDialog";
+import {
+  fetchActiveBranchQr,
+  fetchActiveDepartmentQr,
+  fetchDavomatMethods,
+  fetchQrBranches,
+  fetchQrDepartments,
+  issueBranchQr,
+  issueDepartmentQr,
+  qrPunchDavomat,
+  revokeBranchQr,
+  revokeDepartmentQr,
+  setBranchQrFaceOnly,
+} from "../../lib/davomat-api";
+import { foldScript } from "../../lib/script-fold";
+import { downloadAllQrPdf, downloadQrPdf, downloadQrPng, renderQrToCanvas } from "../../lib/qr-render";
+import { canManageSettings, isDeptHeadRole, isDirectorRole, hasFullPlatformAccess } from "../../lib/roles";
+import { cn } from "../../lib/utils";
+
+function QrCanvasItem({ payload, size = 240 }: { payload: string; size?: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (!payload) return;
+    let cancelled = false;
+    void (async () => {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))));
+      if (cancelled || !ref.current) return;
+      try {
+        await renderQrToCanvas(ref.current, payload, size);
+      } catch {
+        /* ignore paint errors per-item */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [payload, size]);
+
+  return (
+    <canvas
+      ref={ref}
+      width={size}
+      height={size}
+      className="h-[min(240px,68vw)] w-[min(240px,68vw)] max-w-full sm:h-[240px] sm:w-[240px]"
+    />
+  );
+}
+
+type GalleryQr = {
+  id: number;
+  name: string;
+  version: number | null;
+  payload: string | null;
+  needsReissue: boolean;
+};
+
+type Scope = "branches" | "departments";
+
+type Props = {
+  /** Admin: o‘chirish + barcha filiallar/bo‘limlar */
+  adminMode?: boolean;
+};
+
+export default function DavomatQrPage({ adminMode = false }: Props) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [scope, setScope] = useState<Scope>("branches");
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [branchQuery, setBranchQuery] = useState("");
+  const [needsReissue, setNeedsReissue] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [qrStream, setQrStream] = useState<MediaStream | null>(null);
+  const [scanAction, setScanAction] = useState<"in" | "out">("in");
+  const [gallery, setGallery] = useState<GalleryQr[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryTick, setGalleryTick] = useState(0);
+  const [bulkPdfBusy, setBulkPdfBusy] = useState(false);
+
+  useEffect(() => {
+    if (scanOpen) return;
+    setQrStream((prev) => {
+      prev?.getTracks().forEach((t) => t.stop());
+      return null;
+    });
+  }, [scanOpen]);
+
+  const isAdmin = adminMode || canManageSettings(user?.role);
+  /** Admin/asoschi: istalgan filial/bo‘lim QR + lokatsiyasiz skaner */
+  const adminQrAnywhere = hasFullPlatformAccess(user?.role);
+  const isMudir = user?.role === "mudir";
+  const isKoordinator = user?.role === "koordinator";
+  /** Filial QR yaratish — admin/asoschi va koordinator */
+  const canEditBranch = hasFullPlatformAccess(user?.role) || isKoordinator;
+
+  const methodsQ = useQuery({
+    queryKey: ["davomat-methods"],
+    queryFn: fetchDavomatMethods,
+    enabled: Boolean(user),
+  });
+
+  const canBranch =
+    Boolean(methodsQ.data?.canViewBranchQr) ||
+    Boolean(methodsQ.data?.canManageBranchQr) ||
+    isMudir ||
+    isKoordinator ||
+    hasFullPlatformAccess(user?.role) ||
+    isDirectorRole(user?.role);
+  /** Ofis QR sahifasi — faqat admin/direktor/bo‘lim boshliqlari (oddiy xodim emas) */
+  const canDept =
+    Boolean(methodsQ.data?.canViewDeptQr) ||
+    Boolean(methodsQ.data?.canManageDeptQr) ||
+    isDeptHeadRole(user?.role) ||
+    isAdmin;
+  /** Ofis QR yaratish/o‘chirish — admin/asoschi */
+  const canEditDept = hasFullPlatformAccess(user?.role);
+  /** Filial: admin/koordinator; ofis: faqat admin */
+  const canEditQr = scope === "branches" ? canEditBranch : canEditDept;
+
+  useEffect(() => {
+    if (methodsQ.isLoading) return;
+    if (canBranch && !canDept) setScope("branches");
+    else if (!canBranch && canDept) setScope("departments");
+  }, [methodsQ.isLoading, canBranch, canDept]);
+
+  useEffect(() => {
+    setSelectedId(null);
+    setNeedsReissue(false);
+    setGallery([]);
+  }, [scope]);
+
+  const branchQ = useQuery({
+    queryKey: ["davomat-qr-branches"],
+    queryFn: fetchQrBranches,
+    enabled: Boolean(user) && scope === "branches" && canBranch,
+  });
+
+  const deptQ = useQuery({
+    queryKey: ["davomat-qr-departments"],
+    queryFn: fetchQrDepartments,
+    enabled: Boolean(user) && scope === "departments" && canDept,
+  });
+
+  const listLoading = scope === "branches" ? branchQ.isLoading : deptQ.isLoading;
+  const listError = scope === "branches" ? branchQ.isError : deptQ.isError;
+  const listErrorMsg =
+    scope === "branches"
+      ? (branchQ.error as Error)?.message
+      : (deptQ.error as Error)?.message;
+
+  const branches = branchQ.data?.branches;
+  const departments = deptQ.data?.departments;
+
+  const items: Array<{
+    id: number;
+    name: string;
+    hasActiveQr: boolean;
+    version: number | null;
+    managerName?: string;
+    qrFaceOnly?: boolean;
+  }> = useMemo(() => {
+    if (scope === "branches") {
+      return (branches ?? []).map((b) => ({
+        id: b.id,
+        name: b.name,
+        hasActiveQr: b.hasActiveQr,
+        version: b.version,
+        managerName: b.managerName,
+        qrFaceOnly: Boolean(b.qrFaceOnly),
+      }));
+    }
+    return (departments ?? []).map((d) => ({
+      id: d.id,
+      name: d.name,
+      hasActiveQr: d.hasActiveQr,
+      version: d.version,
+    }));
+  }, [scope, branches, departments]);
+
+  const selected = useMemo(
+    () => items.find((b) => b.id === selectedId) ?? null,
+    [items, selectedId],
+  );
+  const canToggleFaceOnly = hasFullPlatformAccess(user?.role) && scope === "branches";
+  const visibleItems = useMemo(() => {
+    if (scope !== "branches") return items;
+    const words = branchQuery
+      .trim()
+      .split(/\s+/)
+      .map((w) => foldScript(w))
+      .filter(Boolean);
+    if (words.length === 0) return items;
+    return items.filter((b) => {
+      const hay = foldScript(`${b.name} ${b.managerName ?? ""}`);
+      return words.every((w) => hay.includes(w));
+    });
+  }, [items, branchQuery, scope]);
+
+  const activeCount = useMemo(() => items.filter((b) => b.hasActiveQr).length, [items]);
+
+  /** Stable key — items massivi har renderda yangilanmasin, gallery loop bo‘lmasin */
+  const galleryKey = useMemo(
+    () =>
+      items
+        .filter((b) => b.hasActiveQr)
+        .map((b) => `${b.id}:${b.version ?? 0}`)
+        .join("|"),
+    [items],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const withQr = items.filter((b) => b.hasActiveQr);
+    if (!withQr.length) {
+      setGallery([]);
+      setGalleryLoading(false);
+      return;
+    }
+    setGalleryLoading(true);
+    void (async () => {
+      try {
+        const rows = await Promise.all(
+          withQr.map(async (b) => {
+            try {
+              if (scope === "branches") {
+                const r = await fetchActiveBranchQr(b.id);
+                return {
+                  id: b.id,
+                  name: r.active?.branchLabel || b.name,
+                  version: r.active?.version ?? b.version,
+                  payload: r.active?.payload || null,
+                  needsReissue: Boolean(r.active?.needsReissue || !r.active?.payload),
+                } satisfies GalleryQr;
+              }
+              const r = await fetchActiveDepartmentQr(b.id);
+              return {
+                id: b.id,
+                name: r.active?.departmentLabel || b.name,
+                version: r.active?.version ?? b.version,
+                payload: r.active?.payload || null,
+                needsReissue: Boolean(r.active?.needsReissue || !r.active?.payload),
+              } satisfies GalleryQr;
+            } catch {
+              return {
+                id: b.id,
+                name: b.name,
+                version: b.version,
+                payload: null,
+                needsReissue: true,
+              } satisfies GalleryQr;
+            }
+          }),
+        );
+        if (!cancelled) setGallery(rows);
+      } finally {
+        if (!cancelled) setGalleryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // galleryKey o‘zgaganda qayta yuklash; items shu key bilan sync
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [galleryKey, galleryTick, scope]);
+
+  const loadActive = useMutation({
+    mutationFn: (id: number) =>
+      scope === "branches" ? fetchActiveBranchQr(id) : fetchActiveDepartmentQr(id),
+    onSuccess: (r) => {
+      setNeedsReissue(Boolean(r.active && (r.active.needsReissue || !r.active.payload)));
+    },
+  });
+
+  useEffect(() => {
+    if (selectedId == null) return;
+    loadActive.mutate(selectedId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, scope]);
+
+  useEffect(() => {
+    if (selectedId != null || !items.length) return;
+    const office = items.find((b) => b.id === 0 || ("sharedOffice" in b && (b as { sharedOffice?: boolean }).sharedOffice));
+    const withQr = items.find((b) => b.hasActiveQr);
+    setSelectedId((office || withQr || items[0]!).id);
+  }, [items, selectedId]);
+
+  const issue = useMutation({
+    mutationFn: (id: number) =>
+      scope === "branches" ? issueBranchQr(id) : issueDepartmentQr(id),
+    onSuccess: async (r) => {
+      setNeedsReissue(false);
+      const id = "branchId" in r ? r.branchId : r.departmentId;
+      setSelectedId(id);
+      // Galereyaga darhol qo‘shish (kutmasdan)
+      if (r.payload) {
+        const label =
+          "branchLabel" in r
+            ? r.branchLabel
+            : "departmentLabel" in r
+              ? r.departmentLabel
+              : selected?.name || `ID ${id}`;
+        setGallery((prev) => {
+          const next: GalleryQr = {
+            id,
+            name: label,
+            version: r.version ?? null,
+            payload: r.payload,
+            needsReissue: false,
+          };
+          const rest = prev.filter((g) => g.id !== id);
+          return [next, ...rest];
+        });
+      }
+      await qc.invalidateQueries({
+        queryKey: scope === "branches" ? ["davomat-qr-branches"] : ["davomat-qr-departments"],
+      });
+      setGalleryTick((n) => n + 1);
+      toast({
+        title: "QR saqlandi",
+        description:
+          scope === "branches"
+            ? "Filial QR tizimda saqlandi — mudir va koordinator ko‘ra oladi."
+            : id === 0
+              ? "Ofis QR saqlandi — faqat ofis xodimlari. Apteka xodimlari filial QR ishlatadi."
+              : "Bo‘lim QR saqlandi — istalgan vaqtda ko‘rish mumkin.",
+      });
+    },
+    onError: (e: Error) => toast({ title: "Xato", description: e.message, variant: "destructive" }),
+  });
+
+  const faceOnly = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => setBranchQrFaceOnly(id, enabled),
+    onSuccess: (data) => {
+      toast({ title: data.message });
+      void qc.invalidateQueries({ queryKey: ["davomat-qr-branches"] });
+    },
+    onError: (e: Error) => toast({ title: "Saqlanmadi", description: e.message, variant: "destructive" }),
+  });
+
+  const revoke = useMutation({
+    mutationFn: (id: number) =>
+      scope === "branches" ? revokeBranchQr(id) : revokeDepartmentQr(id),
+    onSuccess: () => {
+      setNeedsReissue(false);
+      void qc.invalidateQueries({
+        queryKey: scope === "branches" ? ["davomat-qr-branches"] : ["davomat-qr-departments"],
+      });
+      setGalleryTick((n) => n + 1);
+      toast({ title: "QR o‘chirildi (bekor qilindi)" });
+    },
+    onError: (e: Error) => toast({ title: "O‘chirilmadi", description: e.message, variant: "destructive" }),
+  });
+
+  async function onDownloadPng(text: string, id: number) {
+    try {
+      await downloadQrPng(text, `davomat-qr-${scope}-${id}.png`);
+    } catch (e) {
+      toast({ title: "PNG yuklanmadi", description: (e as Error).message, variant: "destructive" });
+    }
+  }
+
+  async function onDownloadPdf(text: string, label: string, id: number) {
+    try {
+      await downloadQrPdf(
+        text,
+        label || (scope === "branches" ? "Filial QR" : "Bo‘lim QR"),
+        `davomat-qr-${scope}-${id}.pdf`,
+      );
+      toast({ title: "PDF yuklandi" });
+    } catch (e) {
+      toast({ title: "PDF yuklanmadi", description: (e as Error).message, variant: "destructive" });
+    }
+  }
+
+  async function onDownloadAllPdf() {
+    setBulkPdfBusy(true);
+    try {
+      let source = gallery.filter((g) => g.payload?.trim());
+
+      if (!source.length) {
+        const withQr = items.filter((b) => b.hasActiveQr);
+        if (!withQr.length) {
+          toast({
+            title: "PDF",
+            description: "Faol QR yo‘q — avval QR yarating",
+            variant: "destructive",
+          });
+          return;
+        }
+        const rows = await Promise.all(
+          withQr.map(async (b) => {
+            try {
+              if (scope === "branches") {
+                const r = await fetchActiveBranchQr(b.id);
+                return {
+                  id: b.id,
+                  name: r.active?.branchLabel || b.name,
+                  version: r.active?.version ?? b.version,
+                  payload: r.active?.payload || null,
+                  needsReissue: Boolean(r.active?.needsReissue || !r.active?.payload),
+                } satisfies GalleryQr;
+              }
+              const r = await fetchActiveDepartmentQr(b.id);
+              return {
+                id: b.id,
+                name: r.active?.departmentLabel || b.name,
+                version: r.active?.version ?? b.version,
+                payload: r.active?.payload || null,
+                needsReissue: Boolean(r.active?.needsReissue || !r.active?.payload),
+              } satisfies GalleryQr;
+            } catch {
+              return {
+                id: b.id,
+                name: b.name,
+                version: b.version,
+                payload: null,
+                needsReissue: true,
+              } satisfies GalleryQr;
+            }
+          }),
+        );
+        source = rows.filter((r) => r.payload?.trim());
+      }
+
+      if (!source.length) {
+        toast({
+          title: "PDF",
+          description: "Yuklash uchun saqlangan QR topilmadi",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const pdfItems = source
+        .map((g) => {
+          const idx = items.findIndex((b) => b.id === g.id);
+          return {
+            n: idx >= 0 ? idx + 1 : 0,
+            title: g.name,
+            payload: g.payload!,
+          };
+        })
+        .sort((a, b) => a.n - b.n || a.title.localeCompare(b.title));
+
+      await downloadAllQrPdf(
+        pdfItems,
+        isAdmin
+          ? scope === "branches"
+            ? "Admin · Filial QR"
+            : "Admin · Bo‘lim QR"
+          : scope === "branches"
+            ? "Davomat QR · Filiallar"
+            : "Davomat QR · Ofis",
+      );
+      toast({
+        title: "PDF yuklandi",
+        description: `${pdfItems.length} ta QR · .pdf fayl saqlandi (har sahifada 1 ta)`,
+      });
+    } catch (e) {
+      toast({
+        title: "PDF yuklanmadi",
+        description: e instanceof Error ? e.message : "Qayta urinib ko‘ring",
+        variant: "destructive",
+      });
+    } finally {
+      setBulkPdfBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void primeQrCamera();
+  }, []);
+
+  function openAdminScanner() {
+    setQrStream(null);
+    setScanOpen(true);
+  }
+
+  async function onAdminScan(detected: string) {
+    const result = await qrPunchDavomat({
+      payload: detected,
+      action: scanAction,
+    });
+    const place = result.branchLabel || result.departmentLabel || null;
+    toast({
+      title: result.action === "in" ? "✓ Keldim (QR)" : "✓ Ketdim (QR)",
+      description: place
+        ? `${result.message || "Qabul qilindi"} · ${place}`
+        : result.message || "Admin QR qabul qilindi (lokatsiya shart emas)",
+    });
+  }
+
+  if (!methodsQ.isLoading && !canBranch && !canDept) {
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-8">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-5 text-center dark:border-rose-900/50 dark:bg-rose-950/30">
+          <p className="text-sm font-medium text-rose-700 dark:text-rose-300">
+            QR yaratishga ruxsat yo‘q. Filial: mudir/koordinator · Ofis QR: bo‘lim boshlig‘i (faqat ko‘rish) yoki admin.
+          </p>
+          <Link
+            href="/davomat-face"
+            className="mt-3 inline-flex text-sm font-semibold text-primary underline-offset-2 hover:underline"
+          >
+            ← Davomat
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (listError) {
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-8">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-5 text-center dark:border-rose-900/50 dark:bg-rose-950/30">
+          <p className="text-sm font-medium text-rose-700 dark:text-rose-300">
+            {listErrorMsg ||
+              (scope === "branches"
+                ? "QR filiallari yuklanmadi."
+                : "QR bo‘limlari yuklanmadi.")}
+          </p>
+          <Link
+            href="/davomat-face"
+            className="mt-3 inline-flex text-sm font-semibold text-primary underline-offset-2 hover:underline"
+          >
+            ← Davomat
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  /** Ofis QR id=0 — Boolean(0) false bo‘lmasin */
+  const canIssue = canEditQr && selectedId != null && !issue.isPending;
+  const canRevoke = canEditQr && selectedId != null && Boolean(selected?.hasActiveQr) && !revoke.isPending;
+  const entityLabel = scope === "branches" ? "filial" : "bo‘lim";
+  const showTabs = canBranch && canDept;
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-5 px-4 py-5 pb-28 sm:px-6 lg:px-8">
+      <header className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+            <QrCode className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+              {isAdmin ? "Admin · Davomat QR" : "Davomat QR"}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {adminQrAnywhere
+                ? "Filial va bo‘lim QR · istalgan QR skaner"
+                : isMudir
+                  ? "Filial QR — faqat ko‘rish va yuklab olish"
+                  : isKoordinator
+                    ? "O‘z filiallaringiz uchun QR yaratish yoki yangilash"
+                    : scope === "departments" && !canEditDept
+                      ? "Ofis QR — faqat ko‘rish va yuklab olish"
+                      : scope === "branches"
+                        ? "Filial QR yaratish, ko‘rish va yuklab olish"
+                        : "Ofis QR yaratish, ko‘rish va yuklab olish"}
+            </p>
+          </div>
+          {items.length > 0 ? (
+            <div className="flex items-center gap-2 text-[11px] font-medium">
+              <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-emerald-700 dark:text-emerald-300">
+                Faol {activeCount}
+              </span>
+              <span className="rounded-full bg-muted px-2.5 py-1 text-muted-foreground">
+                Jami {items.length}
+              </span>
+            </div>
+          ) : null}
+        </div>
+        <p className="max-w-3xl text-[13px] leading-relaxed text-muted-foreground">
+          {isMudir
+            ? "QR faqat admin yoki koordinator yaratadi. Siz faqat ko‘rasiz va PDF/PNG yuklab olasiz."
+            : isKoordinator
+              ? "Faqat o‘z tarmog‘ingizdagi filiallar. QR yo‘q bo‘lsa — «QR yaratish», bor bo‘lsa — «Yangi QR»."
+              : scope === "branches"
+                ? "QR yaratish: faqat admin va koordinator. Mudir faqat ko‘radi."
+                : !canEditDept
+                  ? "Ofis QR ni ko‘rish va PDF/PNG yuklab olish mumkin. Yangi yaratish yoki o‘chirish — faqat admin."
+                  : "Ofis QR — faqat ofis xodimlari (100 m). Mudir, farmasevt, stajyor — o‘z filial QR / Face ID."}
+        </p>
+      </header>
+
+      {showTabs ? (
+        <div
+          role="tablist"
+          aria-label="QR turi"
+          className="grid grid-cols-2 gap-1 rounded-2xl border border-border bg-muted/30 p-1"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={scope === "branches"}
+            onClick={() => setScope("branches")}
+            className={cn(
+              "rounded-xl px-3 py-2.5 text-sm font-semibold transition",
+              scope === "branches"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Filiallar
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={scope === "departments"}
+            onClick={() => setScope("departments")}
+            className={cn(
+              "rounded-xl px-3 py-2.5 text-sm font-semibold transition",
+              scope === "departments"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Ofis QR
+          </button>
+        </div>
+      ) : null}
+
+      {adminQrAnywhere ? (
+        <section className="rounded-2xl border border-sky-200/80 bg-sky-50/60 p-4 shadow-sm dark:border-sky-900/40 dark:bg-sky-950/25 sm:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white">
+                <ScanLine className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-foreground">Admin QR scanner</h2>
+                <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                  Istalgan filial yoki bo‘lim QR · lokatsiya shart emas · faqat admin
+                </p>
+              </div>
+            </div>
+            <div className="flex w-full max-w-xl flex-col gap-2 lg:w-[26rem]">
+              <div
+                role="group"
+                aria-label="Davomat turi"
+                className="grid grid-cols-2 gap-1 rounded-2xl border border-border/80 bg-background/80 p-1"
+              >
+                <button
+                  type="button"
+                  onClick={() => setScanAction("in")}
+                  className={cn(
+                    "rounded-xl px-3 py-2.5 text-sm font-semibold transition",
+                    scanAction === "in"
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  Keldim
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScanAction("out")}
+                  className={cn(
+                    "rounded-xl px-3 py-2.5 text-sm font-semibold transition",
+                    scanAction === "out"
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  Ketdim
+                </button>
+              </div>
+              <Button
+                type="button"
+                size="lg"
+                className="h-11 w-full gap-2 rounded-2xl shadow-sm"
+                onClick={() => openAdminScanner()}
+              >
+                <ScanLine className="h-5 w-5" />
+                QR scanner — skaner qiling
+              </Button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-foreground">
+            {scope === "branches" ? "Filialni tanlang" : "Ofis QR"}
+          </h2>
+          {selected ? (
+            <span
+              className={cn(
+                "rounded-full px-2.5 py-1 text-[11px] font-semibold",
+                selected.hasActiveQr
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                  : "bg-muted text-muted-foreground",
+              )}
+            >
+              {selected.hasActiveQr ? `Tanlangan · Faol v${selected.version}` : "Tanlangan · Nofaol"}
+            </span>
+          ) : null}
+        </div>
+
+        {scope === "branches" ? (
+          <div className="relative mb-3">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={branchQuery}
+              onChange={(e) => setBranchQuery(e.target.value)}
+              placeholder="Filial nomi — krill yoki lotin"
+              className="h-10 rounded-xl pl-9"
+              autoComplete="off"
+            />
+          </div>
+        ) : null}
+
+        {canToggleFaceOnly && selected ? (
+          <div
+            className={cn(
+              "mb-3 flex flex-col gap-3 rounded-2xl border px-3 py-3 sm:flex-row sm:items-center sm:justify-between",
+              selected.qrFaceOnly
+                ? "border-amber-300 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/30"
+                : "border-border bg-muted/30",
+            )}
+          >
+            <div className="min-w-0">
+              <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <ScanFace className="h-4 w-4 shrink-0" />
+                {selected.qrFaceOnly ? "Faqat Face ID" : "QR va Face ID"}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {selected.qrFaceOnly
+                  ? `${selected.name} xodimlari qayerda bo‘lsa ham QR ishlamaydi. Davomat faqat Face ID.`
+                  : `${selected.name} xodimlari QR va Face ID bilan davomat qiladi.`}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant={selected.qrFaceOnly ? "outline" : "destructive"}
+              className="h-10 shrink-0 rounded-xl"
+              disabled={faceOnly.isPending}
+              onClick={() => {
+                const next = !selected.qrFaceOnly;
+                const ask = next
+                  ? `«${selected.name}» xodimlari uchun QR o‘chirilsinmi? Ular boshqa filialga borsa ham faqat Face ID ishlaydi.`
+                  : `«${selected.name}» uchun QR yana yoqilsinmi?`;
+                if (!window.confirm(ask)) return;
+                faceOnly.mutate({ id: selected.id, enabled: next });
+              }}
+            >
+              {faceOnly.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {selected.qrFaceOnly ? "QR ni qayta yoqish" : "QR ni bekor qilish"}
+            </Button>
+          </div>
+        ) : null}
+
+        {listLoading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Yuklanmoqda…
+          </div>
+        ) : items.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            {scope === "branches"
+              ? "Filial topilmadi (GPS bo‘lishi shart)."
+              : "Ofis QR yuklanmadi."}
+          </p>
+        ) : visibleItems.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            «{branchQuery.trim()}» bo‘yicha filial topilmadi. Krill va lotin bir xil qidiriladi.
+          </p>
+        ) : (
+          <div className="grid max-h-[16rem] gap-1.5 overflow-y-auto rounded-2xl border border-border/70 bg-muted/20 p-1.5 sm:max-h-none sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {visibleItems.map((b) => {
+              const idx = items.findIndex((x) => x.id === b.id);
+              const on = selectedId === b.id;
+              const sharedOffice =
+                b.id === 0 || Boolean((b as { sharedOffice?: boolean }).sharedOffice);
+              const displayN = sharedOffice
+                ? null
+                : items[0]?.id === 0
+                  ? idx
+                  : idx + 1;
+              return (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => setSelectedId(b.id)}
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition",
+                    on
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : sharedOffice
+                        ? "bg-emerald-50 text-foreground ring-1 ring-emerald-200/80 hover:bg-emerald-100/80 dark:bg-emerald-950/30 dark:ring-emerald-800/50"
+                        : "bg-background/90 text-foreground hover:bg-muted",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold tabular-nums",
+                      on
+                        ? "bg-white/15"
+                        : b.hasActiveQr
+                          ? "bg-emerald-500/15 text-emerald-700"
+                          : sharedOffice
+                            ? "bg-emerald-500/20 text-emerald-800"
+                            : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {sharedOffice ? "O" : displayN}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold">
+                      {sharedOffice ? b.name : `${displayN}. ${b.name}`}
+                    </span>
+                    <span
+                      className={cn(
+                        "block truncate text-[11px]",
+                        on ? "text-primary-foreground/80" : "text-muted-foreground",
+                      )}
+                    >
+                      {sharedOffice
+                        ? b.hasActiveQr
+                          ? `Umumiy ofis · Faol v${b.version}`
+                          : "Umumiy ofis · QR yo‘q"
+                        : b.qrFaceOnly
+                          ? "Faqat Face ID"
+                          : b.hasActiveQr
+                            ? `Faol · v${b.version}`
+                            : "QR yo‘q"}
+                    </span>
+                  </span>
+                  <span
+                    className={cn(
+                      "hidden h-5 w-5 shrink-0 items-center justify-center sm:flex",
+                      on
+                        ? "text-primary-foreground/80"
+                        : b.hasActiveQr
+                          ? "text-emerald-600"
+                          : "text-muted-foreground/70",
+                    )}
+                    aria-hidden
+                  >
+                    {b.hasActiveQr ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-col items-center gap-2 sm:flex-row sm:justify-center">
+          {canEditQr ? (
+            <Button
+              type="button"
+              size="lg"
+              className="h-11 w-full max-w-xs gap-2 rounded-2xl sm:w-auto sm:min-w-[12rem]"
+              disabled={!canIssue}
+              onClick={() => {
+                if (selectedId == null) return;
+                issue.mutate(selectedId);
+              }}
+            >
+              {issue.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {selected?.hasActiveQr ? "Yangi QR" : "QR yaratish"}
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="lg"
+            variant="outline"
+            className="h-11 w-full max-w-xs gap-2 rounded-2xl sm:w-auto sm:min-w-[12rem]"
+            disabled={bulkPdfBusy || galleryLoading || (gallery.length === 0 && activeCount === 0)}
+            onClick={() => void onDownloadAllPdf()}
+          >
+            {bulkPdfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+            PDF — barcha QR
+          </Button>
+          {canEditQr ? (
+            <Button
+              type="button"
+              size="lg"
+              variant="destructive"
+              className={cn(
+                "h-11 w-full max-w-xs gap-2 rounded-2xl sm:w-auto sm:min-w-[10rem]",
+                !canRevoke && "opacity-45",
+              )}
+              disabled={!canRevoke}
+              onClick={() => {
+                if (selectedId == null) return;
+                if (!window.confirm(`Bu ${entityLabel} QR ni butunlay bekor qilasizmi?`)) return;
+                revoke.mutate(selectedId);
+              }}
+            >
+              {revoke.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              O‘chirish
+            </Button>
+          ) : null}
+        </div>
+        {canEditQr && needsReissue && selectedId != null ? (
+          <p className="mt-2 text-center text-[11px] text-amber-700 dark:text-amber-300">
+            Tanlangan {entityLabel}da eski QR payload yo‘q — «Yangi QR» bosing.
+          </p>
+        ) : canEditQr && selected?.hasActiveQr ? (
+          <p className="mt-2 text-center text-[11px] text-muted-foreground">
+            «Yangi QR» eski kodni bekor qiladi. Barcha QR lar pastda ketma-ket ko‘rinadi.
+          </p>
+        ) : canEditQr && selected ? (
+          <p className="mt-2 text-center text-[11px] text-muted-foreground">
+            Tanlangan {entityLabel}da hali QR yo‘q — «QR yaratish» ni bosing.
+          </p>
+        ) : isMudir && selected && !selected.hasActiveQr ? (
+          <p className="mt-2 text-center text-[11px] text-muted-foreground">
+            Hali QR yaratilmagan — koordinator yoki admindan so‘rang.
+          </p>
+        ) : isMudir ? (
+          <p className="mt-2 text-center text-[11px] text-muted-foreground">
+            Siz faqat QR ni ko‘rasiz va yuklab olasiz.
+          </p>
+        ) : !canEditQr && scope === "departments" ? (
+          <p className="mt-2 text-center text-[11px] text-muted-foreground">
+            Faqat ko‘rish va yuklab olish. Yangi QR yaratish — admin.
+          </p>
+        ) : isKoordinator && selected && !selected.hasActiveQr ? (
+          <p className="mt-2 text-center text-[11px] text-muted-foreground">
+            Bu filialda QR yo‘q — «QR yaratish» ni bosing.
+          </p>
+        ) : isKoordinator && selected?.hasActiveQr ? (
+          <p className="mt-2 text-center text-[11px] text-muted-foreground">
+            «Yangi QR» eski kodni almashtiradi.
+          </p>
+        ) : null}
+      </section>
+
+      <section className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+          <div>
+            <h2 className="text-base font-semibold text-foreground">Barcha QR kodlar</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Faol {scope === "branches" ? "filial" : "bo‘lim"} QR lari · PDF da har sahifada 1 ta katta QR
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-semibold text-muted-foreground">
+              {galleryLoading ? "Yuklanmoqda…" : `${gallery.length} ta`}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              className="h-9 gap-1.5 rounded-xl"
+              disabled={bulkPdfBusy || galleryLoading || (gallery.length === 0 && activeCount === 0)}
+              onClick={() => void onDownloadAllPdf()}
+            >
+              {bulkPdfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+              PDF — barcha QR
+            </Button>
+          </div>
+        </div>
+
+        {galleryLoading ? (
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            QR lar yuklanmoqda…
+          </div>
+        ) : gallery.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-muted/20 px-4 py-14 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+              <QrCode className="h-6 w-6" />
+            </span>
+            <p className="max-w-sm text-sm text-muted-foreground">
+              Hali faol QR yo‘q. Yuqoridan {entityLabel}ni tanlab «QR yaratish» ni bosing — shu yerda
+              chiqadi.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {gallery.map((item, idx) => {
+              const highlighted = selectedId === item.id;
+              const n = idx + 1;
+              return (
+                <article
+                  key={`${scope}-${item.id}`}
+                  className={cn(
+                    "rounded-2xl border p-4 transition sm:p-5",
+                    highlighted
+                      ? "border-primary/40 bg-primary/5 shadow-sm"
+                      : "border-border/80 bg-muted/10",
+                  )}
+                >
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="truncate text-sm font-semibold text-foreground sm:text-base">
+                      {n}. {item.name}
+                      {item.version != null ? (
+                        <span className="ml-1.5 font-medium text-muted-foreground">· v{item.version}</span>
+                      ) : null}
+                    </h3>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold",
+                        item.payload
+                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                          : "bg-amber-500/15 text-amber-800 dark:text-amber-200",
+                      )}
+                    >
+                      {item.payload ? "Faol" : "Qayta yaratish kerak"}
+                    </span>
+                  </div>
+
+                  {item.payload ? (
+                    <div className="flex flex-col items-center gap-4 md:flex-row md:items-start md:justify-center md:gap-10">
+                      <div className="rounded-[1.25rem] border border-border bg-white p-3 shadow-sm">
+                        <QrCanvasItem payload={item.payload} size={240} />
+                      </div>
+                      <div className="flex w-full max-w-xs flex-col items-center gap-2 md:items-stretch md:pt-2">
+                        <p className="text-center text-[12px] leading-relaxed text-muted-foreground md:text-left">
+                          Saqlangan QR — yangi yaratilmaguncha shu ko‘rinishda qoladi.
+                        </p>
+                        <div className="flex w-full flex-wrap justify-center gap-2 md:justify-start">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-10 min-w-[5.5rem] flex-1 gap-1.5 rounded-xl"
+                            onClick={() => void onDownloadPng(item.payload!, item.id)}
+                          >
+                            <FileImage className="h-4 w-4" />
+                            PNG
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-10 min-w-[5.5rem] flex-1 gap-1.5 rounded-xl"
+                            onClick={() => void onDownloadPdf(item.payload!, item.name, item.id)}
+                          >
+                            <FileText className="h-4 w-4" />
+                            PDF
+                          </Button>
+                        </div>
+                        <Button
+                          type="button"
+                          className="h-10 w-full gap-2 rounded-xl"
+                          onClick={() => void onDownloadPng(item.payload!, item.id)}
+                        >
+                          <Download className="h-4 w-4" />
+                          Yuklab olish
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-9 text-xs text-muted-foreground"
+                          onClick={() => setSelectedId(item.id)}
+                        >
+                          Shu {entityLabel}ni tanlash
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-4 text-center text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+                      {canEditQr
+                        ? `Payload yo‘q. ${entityLabel}ni tanlab «Yangi QR» bosing.`
+                        : "Payload yo‘q. Yangi QR yaratish uchun adminga murojaat qiling."}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 pt-1 text-sm">
+        <Link href="/davomat-face" className="font-medium text-primary underline-offset-2 hover:underline">
+          ← Davomat sahifasi
+        </Link>
+        {!adminMode && isAdmin ? (
+          <Link href="/admin/davomat-qr" className="font-medium text-primary underline-offset-2 hover:underline">
+            Admin QR boshqaruvi →
+          </Link>
+        ) : null}
+      </div>
+
+      {adminQrAnywhere ? (
+        <QrScanDialog
+          open={scanOpen}
+          stream={qrStream}
+          onOpenChange={setScanOpen}
+          title={scanAction === "out" ? "Ketdim — QR scanner" : "Keldim — QR scanner"}
+          description="Istalgan filial yoki bo‘lim QR · lokatsiya shart emas · skaner qiling"
+          onDetected={onAdminScan}
+        />
+      ) : null}
+    </div>
+  );
+}

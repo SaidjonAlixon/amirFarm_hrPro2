@@ -1,0 +1,437 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, Download, Search, Store, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
+import { displayBranchName } from "@/lib/pharmacy-staff-api";
+import { useAuth } from "@/contexts/AuthContext";
+import { canExportChecklistStatus } from "@/lib/roles";
+import {
+  downloadCoverageExcel,
+  useAuditCoverage,
+  type CoverageBranch,
+  type CoordinatorCoverage,
+} from "@/lib/branch-audits-api";
+import { useI18n } from "@/i18n/I18nProvider";
+
+function formatDate(ymd: string | null) {
+  if (!ymd) return "—";
+  const [y, m, d] = ymd.split("-");
+  return y && m && d ? `${d}.${m}.${y}` : ymd;
+}
+
+export function CoveragePanel({
+  enabled,
+  focusCoordinator,
+}: {
+  enabled: boolean;
+  focusCoordinator?: string;
+}) {
+  const { t } = useI18n();
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const canExport = canExportChecklistStatus(user?.role);
+  const [q, setQ] = useState("");
+  const [coordKey, setCoordKey] = useState("all");
+  const todayYmd = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Tashkent" });
+  const [period, setPeriod] = useState<"month" | "week" | "today" | "all" | "custom">("month");
+  const [from, setFrom] = useState(`${todayYmd.slice(0, 7)}-01`);
+  const [to, setTo] = useState(todayYmd);
+  const [exporting, setExporting] = useState(false);
+
+  const applyPeriod = (p: "month" | "week" | "today" | "all") => {
+    setPeriod(p);
+    if (p === "all") {
+      setFrom("");
+      setTo("");
+    } else if (p === "today") {
+      setFrom(todayYmd);
+      setTo(todayYmd);
+    } else if (p === "week") {
+      const dow = (new Date(`${todayYmd}T12:00:00`).getDay() + 6) % 7;
+      setFrom(new Date(Date.now() - dow * 86_400_000).toLocaleDateString("en-CA", { timeZone: "Asia/Tashkent" }));
+      setTo(todayYmd);
+    } else {
+      setFrom(`${todayYmd.slice(0, 7)}-01`);
+      setTo(todayYmd);
+    }
+  };
+
+  // Server coverage: ofis /employees emas — koordinator + mudirlar DB dan (rekruter/moliya ham ko‘radi)
+  const { data, isLoading } = useAuditCoverage(
+    { from: from || undefined, to: to || undefined },
+    enabled,
+  );
+
+  useEffect(() => {
+    if (!focusCoordinator || !data) return;
+    const match = data.coordinators.find(
+      (c) => String(c.userId ?? "") === focusCoordinator || String(c.employeeId) === focusCoordinator,
+    );
+    if (match) setCoordKey(String(match.employeeId));
+  }, [focusCoordinator, data]);
+
+  const selected = useMemo(() => {
+    if (!data) return null;
+    if (coordKey === "unassigned") {
+      return {
+        employeeId: 0,
+        userId: null,
+        name: "Biriktirilmagan filiallar",
+        dismissed: false,
+        total: data.unassigned.length,
+        filled: data.unassigned.filter((b) => b.filled).length,
+        missing: data.unassigned.filter((b) => !b.filled).length,
+        percent:
+          data.unassigned.length === 0
+            ? 0
+            : Math.round(
+                (data.unassigned.filter((b) => b.filled).length / data.unassigned.length) * 100,
+              ),
+        branches: data.unassigned,
+      } satisfies CoordinatorCoverage;
+    }
+    if (coordKey === "all") return null;
+    return data.coordinators.find((c) => String(c.employeeId) === coordKey) ?? null;
+  }, [data, coordKey]);
+
+  const needle = q.trim().toLowerCase();
+  const detailBranches = useMemo(() => {
+    const list = selected?.branches ?? [];
+    if (!needle) return list;
+    return list.filter(
+      (b) =>
+        b.branchLocation.toLowerCase().includes(needle) ||
+        b.managerName.toLowerCase().includes(needle),
+    );
+  }, [selected, needle]);
+
+  const filledList = detailBranches.filter((b) => b.filled);
+  const missingList = detailBranches.filter((b) => !b.filled);
+
+  async function handleExcel() {
+    setExporting(true);
+    try {
+      await downloadCoverageExcel({ from: from || undefined, to: to || undefined });
+    } catch (e: any) {
+      toast({ title: "Excel yuklanmadi", description: e?.message, variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const totals = data?.totals;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-foreground">Filial qamrovi</p>
+          <p className="text-xs text-muted-foreground">
+            Tanlangan davrda har bir koordinator o‘z filiallarining nechtasida cheklist o‘tkazgani. Yashil —
+            borilgan, qizil — hali borilmagan.
+          </p>
+        </div>
+        {canExport ? (
+        <Button
+          variant="outline"
+          className="w-full sm:w-auto"
+          onClick={() => void handleExcel()}
+          disabled={exporting || !data}
+        >
+          <Download className="mr-1.5 h-4 w-4" />
+          {exporting ? "Yuklanmoqda…" : "Excel eksport"}
+        </Button>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+        <MiniStat label={t("checklist.stat.coords")} value={String(totals?.coordinators ?? "—")} />
+        <MiniStat label="Jami filial" value={String(totals?.branches ?? "—")} />
+        <MiniStat
+          label="Cheklist bor"
+          value={String(totals?.filled ?? "—")}
+          valueClass="text-emerald-600"
+        />
+        <MiniStat
+          label="Hali borilmagan"
+          value={String(totals?.missing ?? "—")}
+          valueClass="text-rose-600"
+        />
+      </div>
+
+      <div className="rounded-2xl border bg-card p-3 shadow-sm sm:p-4">
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {(
+            [
+              ["month", "Shu oy"],
+              ["week", "Shu hafta"],
+              ["today", "Bugun"],
+              ["all", "1-oktyabrdan beri"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => applyPeriod(key)}
+              className={cn(
+                "rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset",
+                period === key
+                  ? "bg-primary text-primary-foreground ring-primary"
+                  : "bg-card text-muted-foreground ring-border hover:bg-muted",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="flex min-w-0 flex-col gap-1">
+            <Label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Koordinator
+            </Label>
+            <Select value={coordKey} onValueChange={setCoordKey}>
+              <SelectTrigger className="h-11 w-full">
+                <SelectValue placeholder={t("checklist.coord")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Barcha koordinatorlar</SelectItem>
+                {(data?.coordinators ?? []).map((c) => (
+                  <SelectItem key={c.employeeId} value={String(c.employeeId)}>
+                    {c.name} · {c.filled}/{c.total}
+                  </SelectItem>
+                ))}
+                {(data?.unassigned.length ?? 0) > 0 && (
+                  <SelectItem value="unassigned">
+                    Biriktirilmagan · {data?.unassigned.length}
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex min-w-0 flex-col gap-1">
+            <Label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Qidiruv
+            </Label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={t("checklist.branchMudirPh")}
+                className="h-11 pl-9"
+                disabled={coordKey === "all"}
+              />
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-col gap-1">
+            <Label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Dan</Label>
+            <Input
+              type="date"
+              min="2026-10-01"
+              className="h-11"
+              value={from}
+              onChange={(e) => {
+                setFrom(e.target.value);
+                setPeriod("custom");
+              }}
+            />
+          </div>
+          <div className="flex min-w-0 flex-col gap-1">
+            <Label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Gacha</Label>
+            <Input
+              type="date"
+              min="2026-10-01"
+              className="h-11"
+              value={to}
+              onChange={(e) => {
+                setTo(e.target.value);
+                setPeriod("custom");
+              }}
+            />
+          </div>
+        </div>
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Filial «cheklist bor» hisoblanadi — agar shu davrda kamida 1 marta cheklist o‘tkazilgan bo‘lsa.
+        </p>
+      </div>
+
+      {isLoading ? (
+        <p className="rounded-2xl border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+          Yuklanmoqda…
+        </p>
+      ) : coordKey === "all" ? (
+        <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+          <ul className="divide-y">
+            {(data?.coordinators ?? []).map((c) => (
+              <li key={c.employeeId}>
+                <button
+                  type="button"
+                  onClick={() => setCoordKey(String(c.employeeId))}
+                  className="flex w-full flex-col gap-2 px-4 py-3 text-left hover:bg-muted sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-foreground">{c.name}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {c.total} filial · cheklist bor {c.filled} · borilmagan {c.missing}
+                    </p>
+                  </div>
+                  <div className="flex w-full items-center gap-3 sm:w-56">
+                    <Progress value={c.percent} className="h-2 flex-1" />
+                    <span
+                      className={cn(
+                        "w-12 shrink-0 text-right text-sm font-bold tabular-nums",
+                        c.percent >= 80 ? "text-emerald-600" : c.percent >= 50 ? "text-amber-600" : "text-rose-600",
+                      )}
+                    >
+                      {c.percent}%
+                    </span>
+                  </div>
+                </button>
+              </li>
+            ))}
+            {(data?.unassigned.length ?? 0) > 0 && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => setCoordKey("unassigned")}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-amber-50"
+                >
+                  <div>
+                    <p className="font-semibold text-amber-900">Biriktirilmagan filiallar</p>
+                    <p className="text-[11px] text-amber-800/80">{data?.unassigned.length} ta filial</p>
+                  </div>
+                  <Badge variant="secondary">Ko‘rish</Badge>
+                </button>
+              </li>
+            )}
+          </ul>
+        </div>
+      ) : selected ? (
+        <div className="space-y-4">
+          <div className="rounded-2xl border bg-card p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold">{selected.name}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {selected.total} filialdan {selected.filled} tasida cheklist bor, {selected.missing} tasiga
+                  hali borilmagan
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setCoordKey("all")}>
+                Barchasi
+              </Button>
+            </div>
+            <Progress value={selected.percent} className="mt-3 h-2.5" />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <BranchColumn
+              title="Cheklist bor"
+              count={filledList.length}
+              tone="ok"
+              items={filledList}
+            />
+            <BranchColumn
+              title="Hali borilmagan"
+              count={missingList.length}
+              tone="miss"
+              items={missingList}
+            />
+          </div>
+        </div>
+      ) : (
+        <p className="rounded-2xl border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+          Koordinator topilmadi
+        </p>
+      )}
+    </div>
+  );
+}
+
+function MiniStat({
+  label,
+  value,
+  valueClass,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="rounded-xl border bg-card px-3 py-2.5 shadow-sm sm:rounded-2xl sm:px-4 sm:py-3">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground sm:text-xs">{label}</p>
+      <p className={cn("mt-0.5 text-xl font-bold tabular-nums text-foreground sm:text-2xl", valueClass)}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function BranchColumn({
+  title,
+  count,
+  tone,
+  items,
+}: {
+  title: string;
+  count: number;
+  tone: "ok" | "miss";
+  items: CoverageBranch[];
+}) {
+  return (
+    <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+      <div
+        className={cn(
+          "flex items-center justify-between border-b px-4 py-3",
+          tone === "ok" ? "bg-emerald-50/80" : "bg-rose-50/80",
+        )}
+      >
+        <h3 className="inline-flex items-center gap-1.5 text-sm font-semibold">
+          {tone === "ok" ? <Check className="h-4 w-4 text-emerald-700" /> : <X className="h-4 w-4 text-rose-700" />}
+          {title}
+        </h3>
+        <Badge
+          className={
+            tone === "ok" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
+          }
+        >
+          {count}
+        </Badge>
+      </div>
+      <ul className="max-h-[28rem] divide-y overflow-y-auto">
+        {items.length === 0 ? (
+          <li className="px-4 py-8 text-center text-sm text-muted-foreground">Ro‘yxat bo‘sh</li>
+        ) : (
+          items.map((b) => (
+            <li key={b.managerEmployeeId} className="px-4 py-2.5">
+              <p className="flex items-center gap-1.5 text-sm font-medium">
+                <Store className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                {displayBranchName(b.branchLocation) || "Filial"}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">Mudir: {b.managerName}</p>
+              {b.filled ? (
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {b.visitCount} tashrif · oxirgi {formatDate(b.lastVisitDate)}
+                  {b.lastScore != null ? ` · ${b.lastScore}%` : ""}
+                </p>
+              ) : (
+                <p className="mt-0.5 text-[11px] font-medium text-rose-600">Cheklist yo‘q</p>
+              )}
+            </li>
+          ))
+        )}
+      </ul>
+    </div>
+  );
+}
