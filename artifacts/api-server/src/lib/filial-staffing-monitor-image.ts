@@ -184,7 +184,7 @@ export function buildStaffingMonitorSvg(report: StaffingMonitorReport): string {
     `<text x="48" y="1048" font-family="DejaVu Sans,Arial,Helvetica,sans-serif" font-size="14" fill="#64748B">Ochiq ehtiyoj yo'q</text>`
   }
 
-  <text x="48" y="1185" font-family="DejaVu Sans,Arial,Helvetica,sans-serif" font-size="12" fill="#64748B">Vaksina HR · Real-time · Excelda to'liq · Bo'shatilgan yo'q</text>
+  <text x="48" y="1185" font-family="DejaVu Sans,Arial,Helvetica,sans-serif" font-size="12" fill="#64748B">Amir Farm HR · Real-time · Excelda to'liq · Bo'shatilgan yo'q</text>
 </svg>`;
 }
 
@@ -495,7 +495,7 @@ export function renderStaffingMonitorPngPure(report: StaffingMonitorReport): Buf
     );
   });
 
-  cv.text(40, 1175, "Vaksina HR · Excel to'liq · Boshatsiz", muted, 2);
+  cv.text(40, 1175, "Amir Farm HR · Excel to'liq · Boshatsiz", muted, 2);
   return cv.toPng();
 }
 

@@ -59,7 +59,7 @@ export async function sendRecruiterStaffingMonitor(opts?: {
           await filialSendPhoto(t.chat_id, png, {
             caption: shortCap,
             parse_mode: "HTML",
-            filename: "vaksina-xodim-ehtiyoji.png",
+            filename: "amirfarm-xodim-ehtiyoji.png",
           });
         } else {
           await filialSendMessage(t.chat_id, shortCap, { parse_mode: "HTML" });

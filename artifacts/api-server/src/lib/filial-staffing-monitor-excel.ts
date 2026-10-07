@@ -35,7 +35,7 @@ export async function buildStaffingMonitorExcel(report: StaffingMonitorReport): 
   count: number;
 }> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Vaksina lokatsiya";
+  wb.creator = "Amir Farm lokatsiya";
   wb.created = report.generatedAt;
 
   // ── Sheet: Sarlavha ──
@@ -253,7 +253,7 @@ export async function buildStaffingMonitorExcel(report: StaffingMonitorReport): 
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
   return {
     buffer,
-    filename: `vaksina-xodim-ehtiyoji_${stamp}.xlsx`,
+    filename: `amirfarm-xodim-ehtiyoji_${stamp}.xlsx`,
     count: sorted.length,
   };
 }
@@ -267,7 +267,7 @@ export async function buildClosedStaffNeedExcel(report: ClosedStaffNeedReport): 
   const isFound = report.kind === "found";
   const title = isFound ? "TOPILGAN" : "TOPILMAGAN (RAD)";
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Vaksina lokatsiya";
+  wb.creator = "Amir Farm lokatsiya";
   wb.created = report.generatedAt;
 
   const sheet = wb.addWorksheet(isFound ? "Topilgan" : "Topilmagan");
@@ -376,7 +376,7 @@ export async function buildClosedStaffNeedExcel(report: ClosedStaffNeedReport): 
   const tag = isFound ? "topilgan" : "topilmagan";
   return {
     buffer,
-    filename: `vaksina-xodim-${tag}_${stamp}.xlsx`,
+    filename: `amirfarm-xodim-${tag}_${stamp}.xlsx`,
     count: report.rows.length,
   };
 }

@@ -25,7 +25,7 @@ async function pollOnce() {
       await handleFilialBotUpdate(u);
     }
   } catch (err) {
-    logger.warn({ err }, "Vaksina lokatsiya polling xato");
+    logger.warn({ err }, "Amir Farm lokatsiya polling xato");
     await new Promise((r) => setTimeout(r, 3000));
   } finally {
     running = false;
@@ -34,7 +34,7 @@ async function pollOnce() {
 
 async function applyBotProfile() {
   const steps: Array<[string, () => Promise<unknown>]> = [
-    ["setMyName", () => filialSetMyName("Vaksina lokatsiya")],
+    ["setMyName", () => filialSetMyName("Amir Farm lokatsiya")],
     [
       "setMyShortDescription",
       () => filialSetMyShortDescription("Filial lokatsiyasi, telefon va bog‘lanish vaqti"),
@@ -43,7 +43,7 @@ async function applyBotProfile() {
       "setMyDescription",
       () =>
         filialSetMyDescription(
-          "Vaksina lokatsiya — filial, tuman kesimi, bog‘lanish. Rekruterlar uchun xodim ehtiyoji monitoring.",
+          "Amir Farm lokatsiya — filial, tuman kesimi, bog‘lanish. Rekruterlar uchun xodim ehtiyoji monitoring.",
         ),
     ],
     [
@@ -68,7 +68,7 @@ async function applyBotProfile() {
     try {
       await fn();
     } catch (err) {
-      logger.warn({ err, step: label }, "Vaksina lokatsiya profil sozlamasi o‘tmadi");
+      logger.warn({ err, step: label }, "Amir Farm lokatsiya profil sozlamasi o‘tmadi");
     }
   }
 }
@@ -76,26 +76,26 @@ async function applyBotProfile() {
 export function startFilialBotPollingJob() {
   if (started) return;
   if (!isFilialBotConfigured()) {
-    logger.info("Vaksina lokatsiya: TELEGRAM_FILIAL_BOT_TOKEN yo‘q — o‘chirilgan");
+    logger.info("Amir Farm lokatsiya: TELEGRAM_FILIAL_BOT_TOKEN yo‘q — o‘chirilgan");
     return;
   }
   if (!shouldFilialUsePolling()) {
-    logger.info("Vaksina lokatsiya: webhook rejimi (polling yo‘q)");
+    logger.info("Amir Farm lokatsiya: webhook rejimi (polling yo‘q)");
     return;
   }
 
   started = true;
   void (async () => {
     logger.warn(
-      "Vaksina lokatsiya: TELEGRAM_FILIAL_POLLING=1 — production webhook o‘chiriladi. Vercel bot uchun pollingni o‘chiring.",
+      "Amir Farm lokatsiya: TELEGRAM_FILIAL_POLLING=1 — production webhook o‘chiriladi. Vercel bot uchun pollingni o‘chiring.",
     );
     try {
       await filialDeleteWebhook();
     } catch (err) {
-      logger.warn({ err }, "Vaksina lokatsiya deleteWebhook");
+      logger.warn({ err }, "Amir Farm lokatsiya deleteWebhook");
     }
     await applyBotProfile();
-    logger.info("Vaksina lokatsiya polling boshlandi (HR botga tegmaydi)");
+    logger.info("Amir Farm lokatsiya polling boshlandi (HR botga tegmaydi)");
     for (;;) {
       await pollOnce();
     }

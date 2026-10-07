@@ -211,7 +211,7 @@ function listText(branches: FilialBranchCard[], page: number, firstName: string)
   return [
     `👋 <b>Xush kelibsiz, ${esc(firstName)}!</b>`,
     "",
-    "🏢 <b>Vaksina lokatsiya</b> — filiallar, bog‘lanish va lokatsiya.",
+    "🏢 <b>Amir Farm lokatsiya</b> — filiallar, bog‘lanish va lokatsiya.",
     "",
     "Filialingizni tanlang:",
     `<i>Sahifa ${p + 1}/${totalPages} · jami ${branches.length} ta filial</i>`,
@@ -341,7 +341,7 @@ async function sendLiveStaffingMonitor(chatId: number) {
         await filialSendPhoto(chatId, png, {
           caption: shortCap.slice(0, 1024),
           parse_mode: "HTML",
-          filename: "vaksina-xodim-ehtiyoji.png",
+          filename: "amirfarm-xodim-ehtiyoji.png",
         });
       }
     } catch (imgErr) {
@@ -1374,7 +1374,7 @@ export async function handleFilialBotUpdate(update: FilialTelegramUpdate): Promi
       await filialSendMessage(
         chatId,
         [
-          "🛠 <b>Vaksina lokatsiya — Admin</b>",
+          "🛠 <b>Amir Farm lokatsiya — Admin</b>",
           "",
           "Pastdagi tugmalar:",
           `• ${BTN_USERS} — jonli matn + Excel`,
@@ -1394,7 +1394,7 @@ export async function handleFilialBotUpdate(update: FilialTelegramUpdate): Promi
     if (cmd === "/yordam" || cmd === "/help") {
       await trackUser(user, chatId, { action: "help" });
       const lines = [
-        "ℹ️ <b>Vaksina lokatsiya bot</b>",
+        "ℹ️ <b>Amir Farm lokatsiya bot</b>",
         "",
         "• /start — filiallar ro‘yxati",
         "• 📍 Eng yaqin filial — joyingizni yuboring, eng yaqin 3 ta chiqadi",

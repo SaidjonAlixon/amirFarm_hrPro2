@@ -40,6 +40,8 @@ if (!isVercel) {
     }
 
     logger.info({ port }, "Server listening");
+    // Lokatsiya boti faqat so‘rovga javob beradi — fon ishlari o‘chiq bo‘lsa ham ishlaydi
+    startFilialBotPollingJob();
     // Sinov serveri (prod bazaning nusxasi) haqiqiy xodimlarga eslatma yubormasin
     if (process.env.BACKGROUND_JOBS === "0") {
       logger.warn("BACKGROUND_JOBS=0 — fon ishlari o‘chirilgan");
@@ -51,7 +53,6 @@ if (!isVercel) {
     startCoordinatorPresenceJob();
     startReviziyaAlertJob();
     startNotifTestJob();
-    startFilialBotPollingJob();
     startFilialRecruiterMonitorJob();
     startJavobOlishEscalateJob();
     startOpsTicketEscalateJob();

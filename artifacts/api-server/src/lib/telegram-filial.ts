@@ -1,5 +1,5 @@
 /**
- * Vaksina lokatsiya bot — alohida token.
+ * Amir Farm lokatsiya bot — alohida token.
  * HR bot (TELEGRAM_BOT_TOKEN) ga tegmaydi.
  */
 const TG_API = "https://api.telegram.org";

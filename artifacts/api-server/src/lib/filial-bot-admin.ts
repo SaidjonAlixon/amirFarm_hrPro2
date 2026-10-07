@@ -17,7 +17,7 @@ function esc(s: string): string {
 export async function buildLokatsiyaUsersTextReport(): Promise<string> {
   const [stats, users] = await Promise.all([lokatsiyaUserStats(), listLokatsiyaBotUsers()]);
   const lines: string[] = [
-    "📊 <b>Vaksina lokatsiya — foydalanuvchilar</b>",
+    "📊 <b>Amir Farm lokatsiya — foydalanuvchilar</b>",
     `<i>${esc(formatTashkent(new Date()))} (Toshkent)</i>`,
     "",
     `👥 <b>Jami:</b> ${stats.total}`,
@@ -57,7 +57,7 @@ export async function buildLokatsiyaUsersExcel(): Promise<{
   const [users, stats] = await Promise.all([listLokatsiyaBotUsers(), lokatsiyaUserStats()]);
 
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Vaksina lokatsiya";
+  wb.creator = "Amir Farm lokatsiya";
   wb.created = new Date();
 
   const sheet = wb.addWorksheet("Foydalanuvchilar", {
@@ -66,7 +66,7 @@ export async function buildLokatsiyaUsersExcel(): Promise<{
 
   sheet.mergeCells("A1:L1");
   const title = sheet.getCell("A1");
-  title.value = `Vaksina lokatsiya — foydalanuvchilar · Jami ${stats.total} · Aktiv ${stats.active} · Blok ${stats.blocked} · ${formatTashkent(new Date())}`;
+  title.value = `Amir Farm lokatsiya — foydalanuvchilar · Jami ${stats.total} · Aktiv ${stats.active} · Blok ${stats.blocked} · ${formatTashkent(new Date())}`;
   title.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
   title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0A2540" } };
   title.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
@@ -156,7 +156,7 @@ export async function buildLokatsiyaUsersExcel(): Promise<{
   return {
     buffer,
     count: users.length,
-    filename: `vaksina-lokatsiya-users_${stamp}.xlsx`,
+    filename: `amirfarm-lokatsiya-users_${stamp}.xlsx`,
     stats,
   };
 }
