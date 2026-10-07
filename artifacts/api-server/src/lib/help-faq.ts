@@ -137,21 +137,21 @@ export const HELP_FAQS: HelpFaq[] = [
     id: "telegram",
     titleUz: "Telegram",
     titleRu: "Telegram",
-    keywords: ["telegram", "bot", "mini app", "tg", "vaksinahr", "kirish", "вход"],
+    keywords: ["telegram", "bot", "mini app", "tg", "vaksinahr", "amirpharmacy", "kirish", "вход"],
     answerUz:
       "Tizimga ikki xil usulda kirish mumkin:\n• Telegram boti orqali — login/parol yuborganingizdan so‘ng kirish havolasini beradi.\n• Rasmiy sayt orqali.",
     answerRu:
       "Войти в систему можно двумя способами:\n• Через Telegram-бота — после логина/пароля выдаёт ссылку входа.\n• Через официальный сайт.",
     links: [
       {
-        label: "@vaksinahrbot",
-        url: "https://t.me/vaksinahrbot",
+        label: "@Amir_pharmacy_hrbot",
+        url: "https://t.me/Amir_pharmacy_hrbot",
         hintUz: "Telegram bot",
         hintRu: "Telegram-бот",
       },
       {
-        label: "vaksinahr.uz",
-        url: "https://www.vaksinahr.uz/",
+        label: "amirpharmacyhr.uz",
+        url: "https://amirpharmacyhr.uz/",
         hintUz: "Veb sayt",
         hintRu: "Веб-сайт",
       },
