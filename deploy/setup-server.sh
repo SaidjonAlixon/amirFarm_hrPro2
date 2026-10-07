@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Toza Ubuntu 24.04 serverni bir martalik tayyorlash (root sifatida):
-#   curl -fsSL https://raw.githubusercontent.com/SaidjonAlixon/hr_ai/main/deploy/setup-server.sh -o setup.sh
+#   curl -fsSL https://raw.githubusercontent.com/SaidjonAlixon/amirFarm_hrPro2/main/deploy/setup-server.sh -o setup.sh
 #   sudo HR_DOMAIN=hr.example.uz CERT_EMAIL=admin@example.uz bash setup.sh
 #
 # Qayta ishga tushirsa xavfsiz (mavjud narsalarni buzmaydi).
@@ -8,7 +8,7 @@ set -euo pipefail
 
 HR_DOMAIN="${HR_DOMAIN:?HR_DOMAIN kerak, masalan HR_DOMAIN=hr.example.uz}"
 CERT_EMAIL="${CERT_EMAIL:-}"
-REPO_URL="${REPO_URL:-https://github.com/SaidjonAlixon/hr_ai.git}"
+REPO_URL="${REPO_URL:-https://github.com/SaidjonAlixon/amirFarm_hrPro2.git}"
 APP_DIR="${APP_DIR:-/opt/hr_ai}"
 APP_USER="${APP_USER:-hrapp}"
 DB_NAME="${DB_NAME:-hr}"
@@ -72,13 +72,17 @@ echo "==> PostgreSQL"
 PG_VER="$(ls /etc/postgresql | sort -V | tail -n1)"
 PG_CONF_D="/etc/postgresql/$PG_VER/main/conf.d"
 mkdir -p "$PG_CONF_D"
-cat > "$PG_CONF_D/hr-tuning.conf" <<'CONF'
-# 4 vCPU / 8 GB RAM uchun
+RAM_MB="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+PG_SHARED_MB=$(( RAM_MB / 4 ))
+PG_CACHE_MB=$(( RAM_MB * 3 / 4 ))
+PG_MAINT_MB=$(( RAM_MB / 16 ))
+cat > "$PG_CONF_D/hr-tuning.conf" <<CONF
+# RAM ${RAM_MB} MB ga moslangan (setup-server.sh)
 listen_addresses = 'localhost'
 max_connections = 100
-shared_buffers = 2GB
-effective_cache_size = 6GB
-maintenance_work_mem = 512MB
+shared_buffers = ${PG_SHARED_MB}MB
+effective_cache_size = ${PG_CACHE_MB}MB
+maintenance_work_mem = ${PG_MAINT_MB}MB
 work_mem = 16MB
 wal_buffers = 16MB
 random_page_cost = 1.1

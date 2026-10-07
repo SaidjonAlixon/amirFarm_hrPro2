@@ -23,6 +23,7 @@ Fayllar `deploy/` papkasida:
 
 | Fayl | Nima qiladi |
 |------|-------------|
+| `first-install.sh` | Toza serverga hammasini bir yo‘la: `setup-server.sh` → `.env` kalitlari → Neon’dan nusxa → `deploy.sh` |
 | `setup-server.sh` | Toza serverni bir marta tayyorlaydi: Node 24, pnpm, pm2, PostgreSQL, nginx, firewall, swap, backup, watchdog |
 | `deploy.sh` | Yangi kodni chiqaradi: git pull → build → frontend almashtirish → API qayta ishga tushirish → tekshiruv |
 | `backup-db.sh` | Har 6 soatda `pg_dump` + `uploads/` + `.env`, 14 kun; yakshanba nusxasi 90 kun |
