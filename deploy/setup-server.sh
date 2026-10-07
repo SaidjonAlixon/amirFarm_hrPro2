@@ -26,7 +26,8 @@ apt-get update -y
 apt-get upgrade -y
 apt-get install -y curl git ca-certificates gnupg ufw fail2ban nginx \
   certbot python3-certbot-nginx \
-  unattended-upgrades qemu-guest-agent rsync build-essential
+  unattended-upgrades qemu-guest-agent rsync build-essential cron
+systemctl enable --now cron
 
 # PG_MAJOR=17 — Neon’dagi versiya bilan bir xil bo‘lsin (Neon SQL: SELECT version();)
 PG_MAJOR="${PG_MAJOR:-}"

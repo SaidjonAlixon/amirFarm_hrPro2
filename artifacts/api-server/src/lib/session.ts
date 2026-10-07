@@ -5,7 +5,9 @@ import { db, userSessionsTable } from "@workspace/db";
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Cookie `secure` belgisi. COOKIE_SECURE=0 — HTTPS hali yo‘q server (IP orqali HTTP) uchun vaqtincha. */
 export function isProdEnv(): boolean {
+  if (process.env.COOKIE_SECURE === "0") return false;
   return (
     process.env.NODE_ENV === "production" ||
     process.env.VERCEL === "1" ||
