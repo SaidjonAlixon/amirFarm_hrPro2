@@ -373,8 +373,8 @@ function NavBadge({
     <span
       className={cn(
         'inline-flex items-center justify-center rounded-full font-semibold leading-none',
-        pulse && 'animate-pulse ring-2 ring-violet-300/50',
-        tone === 'soft' && 'bg-white text-[#5b4cdb] shadow-sm',
+        pulse && 'animate-pulse ring-2 ring-sky-300/50',
+        tone === 'soft' && 'bg-white text-[#1d4ed8] shadow-sm',
         tone === 'section' && 'bg-slate-900/10 text-slate-700 dark:bg-white/15 dark:text-white/90',
         tone === 'rose' && 'bg-rose-500 text-white',
         collapsed
@@ -1847,10 +1847,8 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
             'relative flex shrink-0 items-center justify-center transition-colors',
             opts.nested &&
               cn(
-                'h-7 w-7 rounded-md',
-                active
-                  ? 'bg-violet-500/25 text-violet-100'
-                  : 'bg-slate-900/[0.04] text-slate-500 group-hover:bg-slate-900/[0.07] group-hover:text-slate-900 dark:bg-white/[0.06] dark:text-white/55 dark:group-hover:bg-white/10 dark:group-hover:text-white',
+                'app-sidebar-nested-icon h-7 w-7 rounded-lg',
+                active && 'app-sidebar-nested-icon-active',
               ),
           )}
         >
@@ -1879,15 +1877,14 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
           <>
             <span
               className={cn(
-                'min-w-0 flex-1 text-[12px] font-medium leading-snug break-words',
-                opts.nested && active && 'font-semibold text-slate-900 dark:text-white',
-                opts.nested && !active && 'text-slate-600 group-hover:text-slate-900 dark:text-white/72 dark:group-hover:text-white',
+                'min-w-0 flex-1 font-medium leading-snug break-words',
+                opts.nested ? 'text-[12.5px]' : 'text-[12px]',
               )}
             >
               {navLabelForPath(item.path, t, item.name)}
             </span>
             {opts.nested && active && !navEditMode ? (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-300 shadow-[0_0_8px_rgba(196,181,253,0.9)]" aria-hidden />
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#0b2a7a]" aria-hidden />
             ) : (
               <NavBadge count={count} pulse={pulse} tone={opts.nested ? 'soft' : 'rose'} />
             )}
@@ -1912,7 +1909,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
             active ? 'app-sidebar-nav-item-active' : 'app-sidebar-nav-item active:scale-[0.99]',
           ),
       navEditMode && 'cursor-grab active:cursor-grabbing ring-1 ring-transparent',
-      isDropTarget && 'ring-violet-400/60 bg-violet-500/15',
+      isDropTarget && 'ring-sky-400/60 bg-sky-500/15',
     );
 
     if (navEditMode && opts.sectionId != null && opts.itemIndex != null) {
@@ -2000,7 +1997,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
       return (
         <div
           key={section.id}
-          className={cn('mb-1', isSectionDrop && 'rounded-xl ring-1 ring-violet-400/40')}
+          className={cn('app-sidebar-section mb-1', isSectionDrop && 'rounded-xl ring-1 ring-sky-400/50')}
           onDragOver={(e) => {
             if (!navEditMode) return;
             e.preventDefault();
@@ -2051,20 +2048,20 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
               className={cn(
                 'app-sidebar-section-trigger flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-all duration-200',
                 open && 'app-sidebar-section-trigger-open',
-                hasActive && !open && 'ring-1 ring-violet-400/25',
+                hasActive && !open && 'ring-1 ring-sky-400/40',
               )}
             >
               <span className="app-sidebar-section-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
                 <SectionIcon className="h-3.5 w-3.5" />
               </span>
-              <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-slate-900 dark:text-white">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[0.005em] text-slate-900 dark:text-white">
                 {section.label}
               </span>
               {badgeSum > 0 ? <NavBadge count={badgeSum} tone="section" /> : null}
               <ChevronDown
                 className={cn(
-                  'h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform duration-200 dark:text-white/45',
-                  open && 'rotate-180 text-slate-700 dark:text-white/80',
+                  'h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform duration-200 dark:text-sky-200/70',
+                  open && 'rotate-180 text-slate-700 dark:text-white',
                 )}
               />
             </button>
@@ -2077,7 +2074,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
                 className={cn(
                   'shrink-0 rounded-lg p-1.5 transition-colors',
                   pinned
-                    ? 'bg-violet-500/20 text-violet-700 dark:bg-violet-400/30 dark:text-violet-100'
+                    ? 'bg-sky-500/20 text-sky-700 dark:bg-sky-400/25 dark:text-sky-100'
                     : 'text-slate-500 hover:bg-slate-900/5 hover:text-slate-900 dark:text-white/70 dark:hover:bg-white/10 dark:hover:text-white',
                 )}
               >
@@ -2092,7 +2089,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
             )}
           >
             <div className="overflow-hidden">
-              <div className="app-sidebar-nested-panel mt-1 ml-0.5 mr-0.5 flex flex-col gap-0.5 p-1">
+              <div className="app-sidebar-nested-panel mt-1 mb-1.5 ml-[1.05rem] mr-0.5 flex flex-col gap-0.5 py-0.5 pl-2 pr-0.5">
                 {section.items.map((item, itemIndex) =>
                   renderNavItem(item, {
                     ...opts,
@@ -2128,7 +2125,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
       {/* Sidebar: mobilda drawer, desktopda doimiy */}
       <aside
         className={cn(
-          'app-sidebar flex flex-col transition-[transform,width] duration-300 ease-out',
+          'app-sidebar dark flex flex-col transition-[transform,width] duration-300 ease-out',
           'fixed inset-y-0 left-0 z-[80] w-[min(19.5rem,92vw)]',
           mobileOpen ? 'translate-x-0' : '-translate-x-full',
           'md:static md:z-auto md:translate-x-0',
@@ -2138,7 +2135,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
       >
         <div className="app-sidebar-brand relative shrink-0 pt-[env(safe-area-inset-top)]">
           <div className="relative flex items-center gap-1 px-2.5 py-2 md:px-3">
-            <div className={cn('min-w-0 flex-1', desktopCollapsed && 'md:hidden')}>
+            <div className={cn('app-sidebar-logo-card min-w-0 flex-1', desktopCollapsed && 'md:hidden')}>
               <img
                 src={`${import.meta.env.BASE_URL}amirfarm-logo.png`}
                 alt="AMIR FARM HR"
@@ -2149,7 +2146,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
               />
             </div>
             {desktopCollapsed ? (
-              <div className="mx-auto hidden h-10 w-10 items-center justify-center rounded-xl bg-white/90 shadow-sm ring-1 ring-violet-200/60 md:flex">
+              <div className="mx-auto hidden h-10 w-10 items-center justify-center rounded-xl bg-white shadow-md ring-1 ring-sky-300/50 md:flex">
                 <img
                   src={`${import.meta.env.BASE_URL}amirfarm-icon.png`}
                   alt="AF"
@@ -2163,7 +2160,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
             <button
               type="button"
               onClick={() => setMobileOpen(false)}
-              className="shrink-0 rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 md:hidden"
+              className="shrink-0 rounded-lg p-1.5 text-white/75 hover:bg-white/10 hover:text-white md:hidden"
               aria-label="Yopish"
             >
               <X className="h-4 w-4" />
@@ -2180,7 +2177,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
           >
             {navEditMode ? (
               <div className="space-y-1.5">
-                <p className="px-1.5 pt-0.5 text-[10px] font-medium leading-snug text-indigo-800 dark:text-violet-100/85">
+                <p className="px-1.5 pt-0.5 text-[10px] font-medium leading-snug text-indigo-800 dark:text-sky-100/85">
                   {t('nav.layout.editHint')}
                 </p>
                 <div className="flex flex-wrap gap-1">
@@ -2192,7 +2189,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
                       navDragRef.current = null;
                       toast({ title: t('nav.layout.saved') });
                     }}
-                    className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500 dark:bg-violet-500/90 dark:hover:bg-violet-500"
+                    className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500 dark:bg-sky-500 dark:hover:bg-sky-400"
                   >
                     <Check className="h-3.5 w-3.5" />
                     {t('nav.layout.done')}
@@ -2217,10 +2214,10 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
                 }}
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-slate-800 transition hover:bg-indigo-50 hover:text-indigo-950 dark:font-medium dark:text-white/75 dark:hover:bg-white/10 dark:hover:text-white"
               >
-                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-indigo-600 dark:text-violet-200" />
+                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-indigo-600 dark:text-sky-300" />
                 <span className="min-w-0 flex-1">{t('nav.layout.customize')}</span>
                 {navIsCustom ? (
-                  <span className="rounded-md bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-indigo-800 dark:bg-violet-400/25 dark:font-semibold dark:text-violet-100">
+                  <span className="rounded-md bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-indigo-800 dark:bg-sky-400/25 dark:font-semibold dark:text-sky-100">
                     {t('nav.layout.customBadge')}
                   </span>
                 ) : null}
@@ -2260,7 +2257,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
                 {facePhotoUrl ? (
                   <img src={facePhotoUrl} alt="" className="h-full w-full object-cover" />
                 ) : (
-                  <span className="flex h-full w-full items-center justify-center bg-gradient-to-br from-violet-500 to-sky-400 text-sm font-bold text-white">
+                  <span className="flex h-full w-full items-center justify-center bg-gradient-to-br from-blue-600 to-cyan-400 text-sm font-bold text-white">
                     {(user.fullName || 'U').slice(0, 1).toUpperCase()}
                   </span>
                 )}
