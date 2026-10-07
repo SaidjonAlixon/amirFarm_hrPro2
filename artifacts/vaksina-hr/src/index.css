@@ -266,8 +266,14 @@
     0 6px 16px -12px rgb(0 0 0 / 0.6);
 }
 
-.app-sidebar-section-trigger:focus {
+.app-sidebar-section-trigger:focus,
+.app-sidebar a:focus {
   outline: none;
+}
+
+.app-sidebar a:focus-visible > * {
+  outline: 2px solid rgb(56 189 248 / 0.7);
+  outline-offset: 1px;
 }
 
 .app-sidebar-section-trigger:focus-visible {

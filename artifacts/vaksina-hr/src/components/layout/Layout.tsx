@@ -43,7 +43,6 @@ import {
   PhoneCall,
   Phone,
   Truck,
-  Fuel,
   GripVertical,
   RotateCcw,
   SlidersHorizontal,
@@ -82,7 +81,7 @@ import { LanguageSwitcher } from '@/components/language-switcher';
 import { useI18n, navLabelForPath } from '@/i18n/I18nProvider';
 import { updateMyProfile } from '@/lib/face-id';
 import { VerifiedBadge, VerifiedName } from "@/components/VerifiedBadge";
-import { isHrManager, isHrRole, isHrOversight, hasHrOversightNav, normalizeUserRole, isStajyor, canSeeHrRecruitment, isHrRecruitmentPath, canViewReviziya, canViewEmployees, canViewDavomat, canViewDavomatXatoliklar, canManageSettings, canManageUsers, canViewDistribyutsiya, canViewOmborxona, canViewLogistika, canViewKochmaAdmin, canViewHolat, canViewChecklistStatus, isDeptHeadRole, isLimitedOfficeStaffRole, isReviziyaRole, userRoleLabel, isDirectorRole, hasFullPlatformAccess, usesDavomatDashboardHome, isSbRole, canManageSmenaFilial } from "@/lib/roles";
+import { isHrManager, isHrRole, isHrOversight, hasHrOversightNav, normalizeUserRole, isStajyor, canSeeHrRecruitment, isHrRecruitmentPath, canViewReviziya, canViewEmployees, canViewDavomat, canViewDavomatXatoliklar, canManageSettings, canManageUsers, canViewDistribyutsiya, canViewOmborxona, canViewKochmaAdmin, canViewHolat, canViewChecklistStatus, isDeptHeadRole, isLimitedOfficeStaffRole, isReviziyaRole, userRoleLabel, isDirectorRole, hasFullPlatformAccess, usesDavomatDashboardHome, isSbRole, canManageSmenaFilial } from "@/lib/roles";
 import { useTelegramMiniAppChrome } from '@/pages/tg-entry';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -190,18 +189,6 @@ const NAV_SECTIONS: {
     label: "Apteka tarmog'i",
     icon: Store,
     paths: ['/pharmacy-network', '/boglanish', '/checklist', '/ehtiyoj'],
-  },
-  {
-    id: 'logistika',
-    label: 'Logistika',
-    icon: Truck,
-    paths: [
-      '/logistika/dashboard',
-      '/logistika/boshqaruv',
-      '/logistika/live',
-      '/logistika/davomat',
-      '/logistika/panel',
-    ],
   },
   {
     id: 'distribution',
@@ -872,7 +859,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
     if (location.startsWith('/smena-filial') && !canManageSmenaFilial(user.role)) {
       setLocation('/dashboard');
     }
-    if (location.startsWith('/logistika') && !canViewLogistika(user.role)) {
+    if (location.startsWith('/logistika')) {
       setLocation('/dashboard');
     }
     if (location.startsWith('/admin/smena-sozlamalar') && !canManageSettings(user.role)) {
@@ -945,14 +932,6 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
   const itNav = { name: 'AyTi', path: '/it', icon: Cpu };
   const distribNav = { name: 'Distribyutsiya', path: '/distribyutsiya', icon: Truck };
   const omborIshNav = { name: 'Omborxona_ish', path: '/omborxona-ish', icon: Package };
-  const logistikaNavItems: NavItem[] = [
-    { name: 'Dashboard / VHK', path: '/logistika/dashboard', icon: LayoutDashboard },
-    { name: 'Boshqaruv', path: '/logistika/boshqaruv', icon: Fuel },
-    { name: 'Live', path: '/logistika/live', icon: Radio },
-    { name: 'GPS Davomat', path: '/logistika/davomat', icon: ClipboardCheck },
-    { name: 'Panel', path: '/logistika/panel', icon: Settings },
-  ];
-
   const taskAnalyticsNav: NavItem = {
     name: 'Topshiriqlar tahlili',
     path: '/vazifalar/tahlil',
@@ -1768,8 +1747,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
     .filter((item) => item.path !== '/davomat-kochma')
     // Arizalar — faqat HR rollari; qolganlarga Xodim kerak alohida bo‘lim
     .filter((item) => item.path !== '/requests' || isHrRole(userRole))
-    .filter((item) => !isReviziyaRole(userRole) || item.path !== '/dashboard')
-    .concat(canViewLogistika(userRole) ? logistikaNavItems : []);
+    .filter((item) => !isReviziyaRole(userRole) || item.path !== '/dashboard');
 
   const toggleNav = () => {
     if (typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches) {
