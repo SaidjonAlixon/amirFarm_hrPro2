@@ -33,7 +33,7 @@ export type MapPlace = {
   tone?: "branch" | "office";
 };
 
-/** Asosiy ofis — davomatdagi belgilangan nuqta: 41°13'09.3"N 69°16'22.9"E */
+/** Asosiy ofis — AMIR FARM: 41°21'06.1"N 69°23'06.4"E */
 export const OFFICE_MAP_PLACE: MapPlace = {
   id: -1,
   lat: DAVOMAT_SITE_LAT,

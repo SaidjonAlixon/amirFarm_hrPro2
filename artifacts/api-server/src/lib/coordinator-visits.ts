@@ -15,8 +15,8 @@ export type CoordVisitRow = typeof coordinatorBranchVisitsTable.$inferSelect;
 export const COORD_OFFICE_BRANCH_ID = 0;
 export const COORD_OFFICE_LABEL = "Asosiy ofis";
 /** Asosiy ofis GPS — davomat bilan bir xil */
-export const COORD_OFFICE_LAT = 41 + 13 / 60 + 9.3 / 3600;
-export const COORD_OFFICE_LNG = 69 + 16 / 60 + 22.9 / 3600;
+export const COORD_OFFICE_LAT = 41 + 21 / 60 + 6.1 / 3600;
+export const COORD_OFFICE_LNG = 69 + 23 / 60 + 6.4 / 3600;
 export const COORD_OFFICE_GEOFENCE_METERS = 100;
 
 /** Cheklist / Keldim / Ketdim / hudud tasdiqlash — yashil zona */

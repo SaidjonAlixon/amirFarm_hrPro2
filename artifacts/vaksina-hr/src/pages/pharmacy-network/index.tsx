@@ -39,7 +39,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../../components/ui/select';
-import { Check, Clock, Pencil, ChevronDown, ChevronUp, MapPin, Store, Search, Users, X, Plus, Copy, Eye, EyeOff, Download, Trash2, UserPlus, ArrowRightLeft, Shuffle } from 'lucide-react';
+import { Building2, Check, Clock, Pencil, ChevronDown, ChevronUp, MapPin, Store, Search, Users, X, Plus, Copy, Eye, EyeOff, Download, Trash2, UserPlus, ArrowRightLeft, Shuffle } from 'lucide-react';
 import { Link } from 'wouter';
 import {
   useCreatePharmacyStaff,
@@ -69,7 +69,7 @@ import { PhoneInput } from '../../components/ui/phone-input';
 import { isCompleteUzPhone, normalizeUzPhone, UZ_PHONE_HINT } from '../../lib/phone';
 import { AddBranchDialog } from './AddBranchDialog';
 import { MoveStaffDialog, type MoveBranchOption, type MovePersonOption } from './MoveStaffDialog';
-import { filialNumberLabel } from '../../lib/filial-number';
+import { filialNumberLabel, isMainOfficeBranchNo } from '../../lib/filial-number';
 import { scriptIncludes } from '../../lib/script-search';
 
 type ShiftType = 'one' | 'two' | 'custom';
@@ -83,8 +83,15 @@ type BranchEmployee = Employee & {
 function FilialNoMark({ no }: { no: number | null | undefined }) {
   const label = filialNumberLabel(no);
   if (!label) return null;
+  const main = isMainOfficeBranchNo(no);
   return (
-    <span className="mr-1.5 inline-flex shrink-0 items-center rounded-md bg-rose-600 px-1.5 py-0.5 align-middle text-[10px] font-bold leading-none text-white">
+    <span
+      className={cn(
+        'mr-1.5 inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 align-middle text-[10px] font-bold leading-none text-white',
+        main ? 'bg-gradient-to-r from-blue-700 to-sky-500 shadow-sm' : 'bg-rose-600',
+      )}
+    >
+      {main ? <Building2 className="h-3 w-3" /> : null}
       {label}
     </span>
   );

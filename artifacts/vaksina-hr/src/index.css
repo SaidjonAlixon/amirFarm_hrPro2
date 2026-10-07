@@ -167,8 +167,17 @@
   }
 }
 
-/* AMIR FARM — yon menyu doim to‘q ko‘k (aside’da `dark` klassi bor, ichidagi dark: uslublar ishlaydi) */
-.app-sidebar,
+/* AMIR FARM — yorug‘ rejimda oq/ko‘k, tungi rejimda to‘q ko‘k yon menyu */
+.app-sidebar {
+  color: #0f172a;
+  background:
+    radial-gradient(ellipse 140% 30% at 0% 0%, rgb(219 234 254 / 0.9), transparent 70%),
+    radial-gradient(ellipse 120% 28% at 100% 100%, rgb(224 242 254 / 0.9), transparent 70%),
+    linear-gradient(180deg, #ffffff 0%, #f8fbff 55%, #f1f6ff 100%);
+  border-right: 1px solid #e3eaf5;
+  box-shadow: 6px 0 28px -20px rgb(15 23 42 / 0.25);
+}
+
 .dark .app-sidebar {
   color: #f8fafc;
   background:
@@ -188,7 +197,11 @@
   image-rendering: auto;
 }
 
-.app-sidebar-brand,
+.app-sidebar-brand {
+  background: #ffffff;
+  border-bottom: 1px solid #e8eef8;
+}
+
 .dark .app-sidebar-brand {
   background: linear-gradient(180deg, rgb(255 255 255 / 0.06) 0%, transparent 100%);
   border-bottom: 1px solid rgb(255 255 255 / 0.1);
@@ -197,18 +210,23 @@
 .app-sidebar-logo-card {
   border-radius: 0.9rem;
   background: #ffffff;
-  padding: 0.35rem 0.5rem;
+  padding: 0.3rem 0.45rem;
+}
+
+.dark .app-sidebar-logo-card {
   box-shadow:
     0 10px 24px -14px rgba(0, 0, 0, 0.55),
     inset 0 -2px 0 rgba(37, 99, 235, 0.18);
 }
 
 .app-sidebar-nav-item {
-  @apply text-slate-700 hover:bg-indigo-50 hover:text-slate-950;
+  @apply text-slate-700 hover:bg-blue-50 hover:text-slate-950;
 }
 
 .app-sidebar-nav-item-active {
-  @apply bg-indigo-100 text-indigo-950 shadow-[inset_0_0_0_1px_rgba(99,102,241,0.35)] font-semibold;
+  @apply text-white font-semibold;
+  background: linear-gradient(90deg, #1d4ed8 0%, #0ea5e9 100%);
+  box-shadow: 0 8px 18px -10px rgb(29 78 216 / 0.7);
 }
 
 .dark .app-sidebar-nav-item {
@@ -238,16 +256,19 @@
 }
 
 .app-sidebar-section-trigger {
-  color: #1e293b;
+  color: #0f172a;
   font-weight: 600;
 }
 
 .app-sidebar-section-trigger:hover {
-  background: #eef2ff;
+  background: #eef4ff;
 }
 
 .app-sidebar-section-trigger-open {
-  background: #e0e7ff;
+  background: #ffffff;
+  box-shadow:
+    inset 0 0 0 1px #dbe6fb,
+    0 8px 18px -14px rgb(30 64 175 / 0.45);
 }
 
 .dark .app-sidebar-section-trigger {
@@ -313,13 +334,7 @@
 }
 
 .app-sidebar-nested-panel {
-  border-radius: 0.85rem;
-  background: linear-gradient(180deg, rgb(15 23 42 / 0.04) 0%, rgb(15 23 42 / 0.02) 100%);
-  border: 1px solid rgb(15 23 42 / 0.08);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.6),
-    0 10px 24px -18px rgb(15 23 42 / 0.2);
-  backdrop-filter: blur(10px);
+  border-left: 2px solid #d6e3fb;
 }
 
 /* Ochilgan bo‘lim — chap tomonda daraxt chizig‘i, fon yo‘q (yozuvlar to‘q ko‘kda aniq ko‘rinadi) */
@@ -338,15 +353,26 @@
 }
 
 .app-sidebar-nested-item:hover {
-  background: #eef2ff;
-  color: #1e1b4b;
+  background: #eef4ff;
+  color: #0f172a;
 }
 
 .app-sidebar-nested-item-active {
-  background: linear-gradient(90deg, rgb(99 102 241 / 0.22) 0%, rgb(99 102 241 / 0.08) 100%);
-  color: #1e1b4b;
-  font-weight: 700;
-  box-shadow: inset 3px 0 0 0 #6366f1;
+  background: linear-gradient(90deg, #1d4ed8 0%, #0ea5e9 100%);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 8px 18px -10px rgb(29 78 216 / 0.7);
+}
+
+.app-sidebar-nested-item-active::before {
+  content: '';
+  position: absolute;
+  left: calc(-0.5rem - 2px);
+  top: 0.4rem;
+  bottom: 0.4rem;
+  width: 3px;
+  border-radius: 9999px;
+  background: #1d4ed8;
 }
 
 .dark .app-sidebar-nested-item {
@@ -380,8 +406,20 @@
 }
 
 .app-sidebar-nested-icon {
-  background: rgb(15 23 42 / 0.05);
-  color: #475569;
+  background: #eef4ff;
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px #dbe6fb;
+}
+
+.group:hover .app-sidebar-nested-icon:not(.app-sidebar-nested-icon-active) {
+  background: #dfeaff;
+  color: #1e40af;
+}
+
+.app-sidebar-nested-icon-active {
+  background: rgb(255 255 255 / 0.22);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.3);
 }
 
 .dark .app-sidebar-nested-icon {
@@ -395,7 +433,6 @@
   color: #fff;
 }
 
-.app-sidebar-nested-icon-active,
 .dark .app-sidebar-nested-icon-active {
   background: linear-gradient(145deg, #3b82f6 0%, #1d4ed8 100%);
   color: #fff;
@@ -435,15 +472,15 @@
 }
 
 .app-sidebar-collapse-btn {
-  background: #eef2ff;
-  border: 1px solid #c7d2fe;
-  color: #312e81;
+  background: #eef4ff;
+  border: 1px solid #d6e3fb;
+  color: #1e3a8a;
   font-weight: 600;
 }
 
 .app-sidebar-collapse-btn:hover {
-  background: #e0e7ff;
-  color: #1e1b4b;
+  background: #dfeaff;
+  color: #172554;
 }
 
 .dark .app-sidebar-collapse-btn {
@@ -460,8 +497,8 @@
 .app-sidebar-profile-card {
   @apply rounded-xl p-2;
   background: #ffffff;
-  border: 1px solid #cbd5e1;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+  border: 1px solid #dbe6fb;
+  box-shadow: 0 8px 20px -16px rgb(30 64 175 / 0.5);
   overflow: hidden;
 }
 

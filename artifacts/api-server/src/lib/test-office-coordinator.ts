@@ -24,9 +24,9 @@ export const TEST_BRANCH_PREFIX = "TEST Filial Ofis";
 export const TEST_COORD_MAX_VISITS = 2;
 
 /** Asosiy ofis (davomat yashil zona) — test filial GPS shu nuqta */
-export const TEST_OFFICE_LAT = 41 + 13 / 60 + 9.3 / 3600;
-export const TEST_OFFICE_LNG = 69 + 16 / 60 + 22.9 / 3600;
-export const TEST_OFFICE_LABEL = '41°13\'09.3"N 69°16\'22.9"E';
+export const TEST_OFFICE_LAT = 41 + 21 / 60 + 6.1 / 3600;
+export const TEST_OFFICE_LNG = 69 + 23 / 60 + 6.4 / 3600;
+export const TEST_OFFICE_LABEL = '41°21\'06.1"N 69°23\'06.4"E';
 
 export function isTestOfficeCoordinatorName(fullName?: string | null): boolean {
   const n = String(fullName || "").trim();

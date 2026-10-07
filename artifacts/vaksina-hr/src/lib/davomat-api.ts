@@ -546,10 +546,10 @@ export async function fetchMyDavomat(): Promise<{
 export const DAVOMAT_GEOFENCE_METERS = 70;
 /** Asosiy ofis — 100 m atrofida qabul qilinadi */
 export const DAVOMAT_OFFICE_GEOFENCE_METERS = 100;
-/** 41°13'09.3"N 69°16'22.9"E */
-export const DAVOMAT_SITE_LAT = 41 + 13 / 60 + 9.3 / 3600;
-export const DAVOMAT_SITE_LNG = 69 + 16 / 60 + 22.9 / 3600;
-export const DAVOMAT_SITE_LABEL = "41°13'09.3\"N 69°16'22.9\"E";
+/** Asosiy ofis — AMIR FARM: 41°21'06.1"N 69°23'06.4"E */
+export const DAVOMAT_SITE_LAT = 41 + 21 / 60 + 6.1 / 3600;
+export const DAVOMAT_SITE_LNG = 69 + 23 / 60 + 6.4 / 3600;
+export const DAVOMAT_SITE_LABEL = "41°21'06.1\"N 69°23'06.4\"E";
 
 export function haversineMeters(
   lat1: number,

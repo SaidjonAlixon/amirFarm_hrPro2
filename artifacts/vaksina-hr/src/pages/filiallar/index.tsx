@@ -619,7 +619,7 @@ export default function PublicFilialMapPage() {
             <dl className="mt-2 space-y-1 text-xs text-slate-700">
               <div className="flex gap-2">
                 <dt className="w-[5.6rem] shrink-0 text-slate-400">Filial</dt>
-                <dd>{selected.branchNo === 0 ? "Asosiy filial" : selected.branchNo != null ? `${selected.branchNo}-filial` : "Raqam yozilmagan"}</dd>
+                <dd>{selected.branchNo === 0 ? "Asosiy ofis" : selected.branchNo != null ? `${selected.branchNo}-filial` : "Raqam yozilmagan"}</dd>
               </div>
               <div className="flex gap-2">
                 <dt className="w-[5.6rem] shrink-0 text-slate-400">Hudud</dt>
