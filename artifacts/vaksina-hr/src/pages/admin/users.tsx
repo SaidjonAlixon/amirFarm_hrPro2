@@ -38,6 +38,7 @@ import {
 import { userRoleLabel, canManageUsers, canDeleteUsers, canChangeStaffStatus, isLimitedOfficeStaffRole, isReviziyaRole, isStajyor } from '../../lib/roles';
 import { useI18n } from '../../i18n/I18nProvider';
 import { dismissUser } from '../../lib/dismissed-staff-api';
+import { useDepartmentTitles } from '../../lib/department-titles-api';
 import { Link, useLocation } from 'wouter';
 
 const ROLES = [
@@ -264,6 +265,7 @@ export default function AdminUsersPage() {
   const [rolePick, setRolePick] = useState('');
   const [phone, setPhone] = useState('');
   const [departmentId, setDepartmentId] = useState<string>('none');
+  const [jobTitle, setJobTitle] = useState<string>('none');
   const [status, setStatus] = useState('active');
 
   const { data: users, isLoading } = useGetUsers({
@@ -281,10 +283,26 @@ export default function AdminUsersPage() {
     () => [...(departments ?? [])].sort((a, b) => a.name.localeCompare(b.name, 'uz')),
     [departments],
   );
+  const titlesQ = useDepartmentTitles();
+  const refetchTitles = titlesQ.refetch;
+  const titleChoices = useMemo(
+    () =>
+      departmentId === 'none'
+        ? []
+        : (titlesQ.data?.titles ?? []).filter((x) => x.active && String(x.departmentId) === departmentId),
+    [titlesQ.data, departmentId],
+  );
 
   useEffect(() => {
-    if (createOpen || editOpen) void refetchDepartments();
-  }, [createOpen, editOpen, refetchDepartments]);
+    if (createOpen || editOpen) {
+      void refetchDepartments();
+      void refetchTitles();
+    }
+  }, [createOpen, editOpen, refetchDepartments, refetchTitles]);
+
+  useEffect(() => {
+    if (jobTitle !== 'none' && !titleChoices.some((x) => x.title === jobTitle)) setJobTitle('none');
+  }, [titleChoices, jobTitle]);
 
   function applyDepartment(id: string) {
     setDepartmentId(id);
@@ -388,6 +406,7 @@ export default function AdminUsersPage() {
     setRolePick('');
     setPhone('');
     setDepartmentId('none');
+    setJobTitle('none');
     setStatus('active');
     setEditing(null);
   };
@@ -445,6 +464,7 @@ export default function AdminUsersPage() {
           role,
           phone: normalizeUzPhone(phone) || undefined,
           departmentId: departmentId === 'none' ? null : Number(departmentId),
+          position: jobTitle === 'none' ? undefined : jobTitle,
         } as any,
       },
       {
@@ -1060,6 +1080,27 @@ export default function AdminUsersPage() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Lavozim (ixtiyoriy)</Label>
+                <Select value={jobTitle} onValueChange={setJobTitle} disabled={departmentId === 'none'}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Lavozim" />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="z-[100] max-h-72">
+                    <SelectItem value="none">Rolga qarab avtomatik</SelectItem>
+                    {titleChoices.map((x) => (
+                      <SelectItem key={x.id} value={x.title}>{x.title}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {departmentId === 'none'
+                    ? 'Avval bo‘limni tanlang — shu bo‘lim lavozimlari chiqadi.'
+                    : titleChoices.length
+                      ? `${titleChoices.length} ta lavozim · yangisini «Bo‘limlar» sahifasida «Lavozim qo‘shish» orqali qo‘shasiz.`
+                      : 'Bu bo‘limda lavozim yo‘q — «Bo‘limlar» sahifasida «Lavozim qo‘shish» orqali qo‘shing.'}
+                </p>
               </div>
             </div>
             <DialogFooter className="gap-2 border-t bg-muted/30 px-5 py-3 sm:gap-2">

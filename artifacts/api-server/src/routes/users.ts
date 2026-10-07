@@ -441,6 +441,7 @@ router.post("/users", requireAuth, async (req: AuthRequest, res): Promise<void> 
   if (!requireUsersAdmin(req, res)) return;
 
   const { fullName, role, departmentId, login, password, phone, status } = req.body ?? {};
+  const position = String(req.body?.position ?? "").trim().replace(/\s+/g, " ").slice(0, 80) || null;
   if (!fullName?.trim() || !role) {
     res.status(400).json({ error: "Ism-familiya va rol majburiy" });
     return;
@@ -489,7 +490,14 @@ router.post("/users", requireAuth, async (req: AuthRequest, res): Promise<void> 
       fullName: user.fullName,
       role: user.role,
       departmentId: user.departmentId,
+      position,
     });
+    if (position) {
+      await db
+        .update(employeesTable)
+        .set({ position, updatedAt: new Date() })
+        .where(eq(employeesTable.userId, user.id));
+    }
 
     let departmentName: string | null = null;
     if (user.departmentId) {

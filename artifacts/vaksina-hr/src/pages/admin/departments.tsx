@@ -377,10 +377,14 @@ export default function AdminDepartmentsPage() {
   const [editName, setEditName] = useState("");
   const [headId, setHeadId] = useState<string>("none");
   const [deleteTarget, setDeleteTarget] = useState<Department | null>(null);
+  const [titleOpen, setTitleOpen] = useState(false);
+  const [titleDeptId, setTitleDeptId] = useState<string>("");
+  const [titleValue, setTitleValue] = useState("");
 
   const { data: departments, isLoading } = useGetDepartments();
   const { data: users } = useGetUsers();
   const titlesQ = useDepartmentTitles();
+  const addTitle = useAddDepartmentTitle();
   const createMutation = useCreateDepartment();
   const updateMutation = useUpdateDepartment();
   const deleteMutation = useDeleteDepartment();
@@ -433,6 +437,45 @@ export default function AdminDepartmentsPage() {
   const openCreate = () => {
     setNewName("");
     setCreateOpen(true);
+  };
+
+  const openAddTitle = (deptId?: number) => {
+    setTitleDeptId(deptId != null ? String(deptId) : expanded != null ? String(expanded) : "");
+    setTitleValue("");
+    setTitleOpen(true);
+  };
+
+  const titleDept = (departments ?? []).find((d) => String(d.id) === titleDeptId) ?? null;
+  const titleDeptActive = titleDept ? (titlesByDept.get(titleDept.id) ?? []).filter((x) => x.active) : [];
+  const titleSuggestions = TITLE_SUGGESTIONS.filter(
+    (s) => !titleDeptActive.some((x) => x.title.toLocaleLowerCase("uz") === s.toLocaleLowerCase("uz")),
+  );
+
+  const onAddTitle = (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = titleValue.trim().replace(/\s+/g, " ");
+    if (!titleDept) {
+      toast({ title: "Bo‘limni tanlang", variant: "destructive" });
+      return;
+    }
+    if (clean.length < 2) {
+      toast({ title: "Lavozim nomini kiriting", variant: "destructive" });
+      return;
+    }
+    addTitle.mutate(
+      { departmentId: titleDept.id, title: clean },
+      {
+        onSuccess: (r) => {
+          toast({
+            title: r.reactivated ? "Lavozim qayta ochildi" : "Lavozim qo‘shildi",
+            description: `${titleDept.name} · ${clean} — endi foydalanuvchi qo‘shishda tanlanadi`,
+          });
+          setTitleOpen(false);
+          setExpanded(titleDept.id);
+        },
+        onError: (err) => toast({ title: "Qo‘shilmadi", description: errMessage(err, "Xato"), variant: "destructive" }),
+      },
+    );
   };
 
   const openEdit = (d: Department) => {
@@ -520,10 +563,20 @@ export default function AdminDepartmentsPage() {
               <p className="mt-1 max-w-xl text-sm text-white/75">Bo‘limlar, ularning boshliqlari va lavozimlari. Yangi bo‘lim ochilganda asosiy lavozimlar o‘zi yaratiladi.</p>
             </div>
             {canManage ? (
-              <Button onClick={openCreate} className="h-11 gap-2 rounded-xl bg-white px-5 font-semibold text-[#0b3a5c] shadow-md hover:bg-sky-50">
-                <Plus className="h-4 w-4" />
-                {t("admin.newDept")}
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  onClick={() => openAddTitle()}
+                  variant="outline"
+                  className="h-11 gap-2 rounded-xl border-white/30 bg-white/10 px-5 font-semibold text-white hover:bg-white/20 hover:text-white"
+                >
+                  <Briefcase className="h-4 w-4" />
+                  Lavozim qo‘shish
+                </Button>
+                <Button onClick={openCreate} className="h-11 gap-2 rounded-xl bg-white px-5 font-semibold text-[#0b3a5c] shadow-md hover:bg-sky-50">
+                  <Plus className="h-4 w-4" />
+                  {t("admin.newDept")}
+                </Button>
+              </div>
             ) : null}
           </div>
         </div>
@@ -679,6 +732,106 @@ export default function AdminDepartmentsPage() {
               <Button type="submit" className="min-w-[140px] gap-1.5 bg-[#0b3a5c] hover:bg-[#0b3a5c]/90" disabled={createMutation.isPending || newName.trim().length < 2}>
                 {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                 Bo‘lim ochish
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={titleOpen} onOpenChange={setTitleOpen}>
+        <DialogContent hideClose className="gap-0 overflow-hidden p-0 sm:max-w-lg">
+          <div className="relative bg-[#0b3a5c] px-6 py-5 text-white">
+            <div className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/[0.07]" />
+            <div className="relative flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/20">
+                  <Briefcase className="h-5 w-5" />
+                </span>
+                <div>
+                  <DialogTitle className="text-lg font-semibold text-white">Lavozim qo‘shish</DialogTitle>
+                  <p className="text-xs text-white/70">Qo‘shilgan lavozim foydalanuvchi qo‘shishda shu bo‘lim uchun chiqadi</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setTitleOpen(false)} className="rounded-lg p-1.5 text-white/70 hover:bg-white/10 hover:text-white" aria-label="Yopish">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+          <form onSubmit={onAddTitle} className="space-y-5 px-6 py-5">
+            <div className="space-y-2">
+              <Label className="text-sm font-semibold">Bo‘lim</Label>
+              <Select value={titleDeptId || undefined} onValueChange={setTitleDeptId}>
+                <SelectTrigger className="h-12 rounded-xl text-base">
+                  <SelectValue placeholder="Bo‘limni tanlang" />
+                </SelectTrigger>
+                <SelectContent className="max-h-80">
+                  {[...(departments ?? [])]
+                    .sort((a, b) => a.name.localeCompare(b.name, "uz"))
+                    .map((d) => (
+                      <SelectItem key={d.id} value={String(d.id)}>
+                        {d.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-sm font-semibold">Lavozim nomi</Label>
+              <Input
+                value={titleValue}
+                onChange={(e) => setTitleValue(e.target.value)}
+                placeholder="Masalan: Bosh mutaxassis"
+                maxLength={80}
+                className="h-12 rounded-xl text-base"
+              />
+              {titleSuggestions.length ? (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {titleSuggestions.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setTitleValue(s)}
+                      className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            {titleDept ? (
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-3.5 dark:border-white/10 dark:bg-white/[0.03]">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  «{titleDept.name}» lavozimlari · {titleDeptActive.length}
+                </p>
+                {titleDeptActive.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {titleDeptActive.map((x) => (
+                      <span
+                        key={x.id}
+                        className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs font-medium text-[#0f2744] shadow-sm ring-1 ring-slate-200 dark:bg-slate-950 dark:text-white dark:ring-white/10"
+                      >
+                        {isLeadTitle(x.title) ? <Crown className="h-3 w-3 text-amber-500" /> : <Briefcase className="h-3 w-3 text-slate-400" />}
+                        {x.title}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1.5 text-xs text-muted-foreground">Bu bo‘limda hali lavozim yo‘q</p>
+                )}
+              </div>
+            ) : null}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setTitleOpen(false)}>
+                {t("ui.cancel")}
+              </Button>
+              <Button
+                type="submit"
+                className="min-w-[140px] gap-1.5 bg-[#0b3a5c] hover:bg-[#0b3a5c]/90"
+                disabled={addTitle.isPending || !titleDept || titleValue.trim().length < 2}
+              >
+                {addTitle.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                Lavozim qo‘shish
               </Button>
             </div>
           </form>
