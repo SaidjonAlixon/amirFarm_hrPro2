@@ -1000,23 +1000,30 @@ export default function DavomatFacePage() {
     }
   }, [isAuthenticated]);
 
+  const workplaceLoadedRef = useRef(false);
   const loadWorkplace = useCallback(async (coords?: { lat: number; lng: number } | null) => {
     if (!isAuthenticated) {
+      workplaceLoadedRef.current = false;
       setWorkplace(null);
       return;
     }
-    try {
-      const useField =
-        isReviziyaRole(user?.role) &&
-        coords &&
-        Number.isFinite(coords.lat) &&
-        Number.isFinite(coords.lng);
-      const w = await fetchMyWorkplace(
-        useField ? { lat: coords!.lat, lng: coords!.lng } : undefined,
-      );
-      setWorkplace(w);
-    } catch {
-      setWorkplace(null);
+    const useField =
+      isReviziyaRole(user?.role) &&
+      coords &&
+      Number.isFinite(coords.lat) &&
+      Number.isFinite(coords.lng);
+    // Mobil internet uzilsa filial nuqtasi yo‘qolib, xaritada «Asosiy ofis» qolmasin
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const w = await fetchMyWorkplace(
+          useField ? { lat: coords!.lat, lng: coords!.lng } : undefined,
+        );
+        workplaceLoadedRef.current = true;
+        setWorkplace(w);
+        return;
+      } catch {
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      }
     }
   }, [isAuthenticated, user?.role]);
 
@@ -1039,7 +1046,9 @@ export default function DavomatFacePage() {
   }, [isAuthenticated, applyHistory]);
 
   useEffect(() => {
-    void fetchDavomatSite().then(setSite);
+    void fetchDavomatSite().then((s) => {
+      if (!workplaceLoadedRef.current) setSite(s);
+    });
   }, []);
 
   /** Face ID model — kamera ruxsatini fonida qayta so‘ramaymiz (bir marta yetadi) */
@@ -1080,6 +1089,18 @@ export default function DavomatFacePage() {
 
   useEffect(() => {
     void loadWorkplace(null);
+  }, [loadWorkplace]);
+
+  useEffect(() => {
+    const retry = () => {
+      if (!workplaceLoadedRef.current && document.visibilityState === "visible") void loadWorkplace(null);
+    };
+    window.addEventListener("online", retry);
+    document.addEventListener("visibilitychange", retry);
+    return () => {
+      window.removeEventListener("online", retry);
+      document.removeEventListener("visibilitychange", retry);
+    };
   }, [loadWorkplace]);
 
   /** Reviziya: GPS bo‘yicha eng yaqin filial/ofis zonasini yangilash (debounce) */
