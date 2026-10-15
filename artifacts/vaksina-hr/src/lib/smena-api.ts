@@ -191,6 +191,8 @@ export type ShiftBoardStaff = {
   overrides: Array<{ id: number; shiftKey: SlotShiftKey; weekdays: number[] }>;
   week: Array<{ weekday: number; shiftKey: SlotShiftKey; override: boolean }>;
   otherRotations: number;
+  /** Kun ora ishlash: birinchi ish kuni (YYYY-MM-DD), yo‘q bo‘lsa null */
+  altAnchor: string | null;
 };
 
 export type ShiftBoard = {
@@ -207,6 +209,14 @@ export function fetchShiftBoard() {
 /** shiftKey = null — tanlangan kunlar asosiy smenaga qaytadi */
 export function saveShiftOverride(body: { employeeId: number; weekdays: number[]; shiftKey: SlotShiftKey | null }) {
   return apiJson<{ ok: boolean; message: string; cleared: boolean }>("/smena/shift-override", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** anchor = null — kun ora tartibini o‘chirish */
+export function saveAltDays(body: { employeeId: number; anchor: string | null }) {
+  return apiJson<{ ok: boolean; message: string; anchor: string | null }>("/smena/alt-days", {
     method: "POST",
     body: JSON.stringify(body),
   });

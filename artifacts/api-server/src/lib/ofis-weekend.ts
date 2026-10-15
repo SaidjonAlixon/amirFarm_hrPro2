@@ -3,7 +3,7 @@
  * Xavfsizlik (SB) — o‘z jadvali (security-shifts).
  */
 import { isSecurityRestDay, securityShiftFor, SECURITY_USER_ROLES } from "./security-shifts";
-import { payrollCalendarScope, scopeDayStatus, swapOn } from "./work-calendar";
+import { altDayOn, payrollCalendarScope, scopeDayStatus, swapOn } from "./work-calendar";
 
 const SHIFT_PHARMACY_USER_ROLES = new Set(["mudir", "farmasevt", "stajyor"]);
 const SHIFT_PHARMACY_ORG_ROLES = new Set([
@@ -129,6 +129,8 @@ export function scheduledRestInfo(ymd: string, emp: ScheduleStaff): RestInfo {
     }
     return { rest: false, reason: null, swap: { kind: "work", with: swap.swap.employeeName, id: swap.swap.id } };
   }
+  const alt = altDayOn(emp.employeeId, ymd);
+  if (alt) return { rest: !alt.work, reason: alt.work ? null : "Kun ora ishlash — dam kuni" };
   const office = isOfisStaffEmp(emp);
   if (office || isShiftPharmacyEmp(emp)) {
     const scope = office ? "ofis" : payrollCalendarScope(emp);

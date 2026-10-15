@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   db,
+  pool,
   employeesTable,
   employeeBranchAssignmentsTable,
   employeeDayShiftPlansTable,
@@ -27,6 +28,7 @@ import {
   type WorkSlotRow,
 } from "../lib/work-slots";
 import { addDaysYmd } from "../lib/attendance-engine";
+import { ensureWorkCalendarSchema, invalidateWorkCalendar, loadWorkCalendar } from "../lib/work-calendar";
 
 const router: IRouter = Router();
 
@@ -1591,6 +1593,7 @@ router.get("/smena/shift-board", requireAuth, async (req: AuthRequest, res): Pro
 
     const today = todayTashkentYmd();
     const todayWd = isoWeekdayTashkent(today);
+    const { altDays } = await loadWorkCalendar();
 
     const staff = people.map((p) => {
       const rows = slotsByEmp.get(p.id) || [];
@@ -1630,6 +1633,7 @@ router.get("/smena/shift-board", requireAuth, async (req: AuthRequest, res): Pro
         overrides,
         week,
         otherRotations,
+        altAnchor: altDays.get(p.id) || null,
       };
     });
     staff.sort((a, b) => a.fullName.localeCompare(b.fullName, "uz"));
@@ -1831,6 +1835,67 @@ router.post("/smena/shift-override", requireAuth, async (req: AuthRequest, res):
   } catch (err) {
     console.error("POST /smena/shift-override error:", err);
     res.status(500).json({ error: "Smena saqlanmadi" });
+  }
+});
+
+/**
+ * Kun ora ishlash: anchor — birinchi ish kuni, keyin bir kun dam, bir kun ish.
+ * anchor = null — kun ora tartibi o‘chiriladi (oddiy jadvalga qaytadi).
+ */
+router.post("/smena/alt-days", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  const role = req.userRole || "";
+  if (denyNonAdminOrHr(role, res)) return;
+  try {
+    const employeeId = Number(req.body?.employeeId);
+    const anchorRaw = req.body?.anchor == null || req.body?.anchor === "" ? null : String(req.body.anchor);
+    if (!Number.isFinite(employeeId) || employeeId <= 0) {
+      res.status(400).json({ error: "Xodimni tanlang" });
+      return;
+    }
+    if (anchorRaw && !/^\d{4}-\d{2}-\d{2}$/.test(anchorRaw)) {
+      res.status(400).json({ error: "Birinchi ish kuni sanasi noto‘g‘ri" });
+      return;
+    }
+    const target = await empById(employeeId);
+    if (!target) {
+      res.status(404).json({ error: "Xodim topilmadi" });
+      return;
+    }
+    if (!isPharmacyShiftStaff(null, target.orgRole)) {
+      res.status(400).json({ error: "Kun ora tartibi faqat mudir, farmasevt va stajyor uchun" });
+      return;
+    }
+    await ensureWorkCalendarSchema();
+    const [actor] = await db
+      .select({ fullName: usersTable.fullName })
+      .from(usersTable)
+      .where(eq(usersTable.id, req.userId!))
+      .limit(1);
+    if (anchorRaw) {
+      await pool.query(
+        `INSERT INTO employee_alt_days (employee_id, anchor, updated_by_id, updated_by_name, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (employee_id) DO UPDATE SET
+           anchor = EXCLUDED.anchor, updated_by_id = EXCLUDED.updated_by_id,
+           updated_by_name = EXCLUDED.updated_by_name, updated_at = NOW()`,
+        [employeeId, anchorRaw, req.userId ?? null, actor?.fullName || null],
+      );
+    } else {
+      await pool.query(`DELETE FROM employee_alt_days WHERE employee_id = $1`, [employeeId]);
+    }
+    invalidateWorkCalendar();
+
+    const [y, m, d] = (anchorRaw || "").split("-");
+    const text = anchorRaw
+      ? `Ish tartibingiz o‘zgardi: ${d}.${m}.${y} dan boshlab kun ora ishlaysiz (bir kun ish, bir kun dam).`
+      : "Kun ora ish tartibi bekor qilindi — oddiy smena jadvali bo‘yicha ishlaysiz.";
+    if (target.userId) {
+      await notifyUser({ userId: target.userId, text, type: "smena_slot", linkUrl: "/davomat-face" });
+    }
+    res.json({ ok: true, message: text, anchor: anchorRaw });
+  } catch (err) {
+    console.error("POST /smena/alt-days error:", err);
+    res.status(500).json({ error: "Kun ora tartibi saqlanmadi" });
   }
 });
 

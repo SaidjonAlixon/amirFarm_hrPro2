@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import {
   changeShiftOnly,
   fetchShiftBoard,
+  saveAltDays,
   saveShiftOverride,
   type ShiftBoardOption,
   type ShiftBoardStaff,
@@ -110,6 +111,65 @@ function weekdaysText(days: number[]): string {
     i = j + 1;
   }
   return parts.join(", ");
+}
+
+function addDaysYmd(ymd: string, n: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y!, m! - 1, d! + n)).toISOString().slice(0, 10);
+}
+
+function dayDiff(a: string, b: string): number {
+  const [ay, am, ad] = a.split("-").map(Number);
+  const [by, bm, bd] = b.split("-").map(Number);
+  return Math.round((Date.UTC(ay!, am! - 1, ad!) - Date.UTC(by!, bm! - 1, bd!)) / 86_400_000);
+}
+
+function fmtDmy(ymd: string): string {
+  const [y, m, d] = ymd.split("-");
+  return `${d}.${m}.${y}`;
+}
+
+/** Kun ora: anchor — ish kuni; anchordan oldingi kunlar — null (oddiy jadval) */
+function altWorks(anchor: string, ymd: string): boolean | null {
+  const diff = dayDiff(ymd, anchor);
+  if (diff < 0) return null;
+  return diff % 2 === 0;
+}
+
+function isoWeekdayOf(ymd: string): number {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const wd = new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay();
+  return wd === 0 ? 7 : wd;
+}
+
+function AltDaysStrip({ anchor, from, days = 14 }: { anchor: string; from: string; days?: number }) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {Array.from({ length: days }, (_, i) => addDaysYmd(from, i)).map((ymd) => {
+        const work = altWorks(anchor, ymd);
+        const meta = WEEKDAYS[isoWeekdayOf(ymd) - 1]!;
+        return (
+          <div
+            key={ymd}
+            title={`${fmtDmy(ymd)} (${meta.full}): ${work == null ? "oddiy jadval" : work ? "ish kuni" : "dam kuni"}`}
+            className={cn(
+              "flex w-10 flex-col items-center rounded-md py-1 text-[10px] leading-tight",
+              work == null
+                ? "bg-muted text-muted-foreground"
+                : work
+                  ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
+                  : "bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-100",
+              ymd === from && "ring-2 ring-primary ring-offset-1 ring-offset-background",
+            )}
+          >
+            <span className="font-medium opacity-70">{meta.short}</span>
+            <span className="font-bold">{ymd.slice(8, 10)}</span>
+            <span className="text-[9px] font-semibold">{work == null ? "—" : work ? "Ish" : "Dam"}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function ShiftChip({ shiftKey, options, className }: { shiftKey: SlotShiftKey; options: ShiftBoardOption[]; className?: string }) {
@@ -211,7 +271,7 @@ function ShiftPicker({
   );
 }
 
-type FilterKey = "all" | SlotShiftKey | "override";
+type FilterKey = "all" | SlotShiftKey | "override" | "alt";
 
 export default function ShiftChangeBoard() {
   const { toast } = useToast();
@@ -245,14 +305,16 @@ export default function ShiftChangeBoard() {
   const filtered = useMemo(() => {
     if (shiftFilter === "all") return byBranchAndSearch;
     if (shiftFilter === "override") return byBranchAndSearch.filter((s) => s.overrides.length > 0);
+    if (shiftFilter === "alt") return byBranchAndSearch.filter((s) => Boolean(s.altAnchor));
     return byBranchAndSearch.filter((s) => s.baseShiftKey === shiftFilter);
   }, [byBranchAndSearch, shiftFilter]);
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: byBranchAndSearch.length, override: 0 };
+    const c: Record<string, number> = { all: byBranchAndSearch.length, override: 0, alt: 0 };
     for (const s of byBranchAndSearch) {
       c[s.baseShiftKey] = (c[s.baseShiftKey] || 0) + 1;
       if (s.overrides.length) c.override! += 1;
+      if (s.altAnchor) c.alt! += 1;
     }
     return c;
   }, [byBranchAndSearch]);
@@ -293,6 +355,12 @@ export default function ShiftChangeBoard() {
               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">3</span>
               <span>
                 <strong>Haftalik almashtirish</strong> — masalan faqat Shanba kuni 2-smena, qolgan kunlar asosiy smena.
+              </span>
+            </li>
+            <li className="flex gap-2">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">4</span>
+              <span>
+                <strong>Kun ora ishlash</strong> — bir kun ish, bir kun dam (birinchi ish kunidan boshlab).
               </span>
             </li>
           </ol>
@@ -342,10 +410,16 @@ export default function ShiftChangeBoard() {
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {(["all", ...options.map((o) => o.key), "override"] as FilterKey[]).map((k) => {
+            {(["all", ...options.map((o) => o.key), "override", "alt"] as FilterKey[]).map((k) => {
               const active = shiftFilter === k;
               const label =
-                k === "all" ? "Hammasi" : k === "override" ? "Haftalik almashtirishi bor" : optionFor(options, k)?.label || k;
+                k === "all"
+                  ? "Hammasi"
+                  : k === "override"
+                    ? "Haftalik almashtirishi bor"
+                    : k === "alt"
+                      ? "Kun ora ishlaydi"
+                      : optionFor(options, k)?.label || k;
               return (
                 <button
                   key={k}
@@ -356,7 +430,7 @@ export default function ShiftChangeBoard() {
                     active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background hover:bg-muted",
                   )}
                 >
-                  {k !== "all" && k !== "override" ? (
+                  {k !== "all" && k !== "override" && k !== "alt" ? (
                     <span className={cn("h-1.5 w-1.5 rounded-full", SHIFT_TONE[k].dot)} />
                   ) : null}
                   {label} · {counts[k] || 0}
@@ -403,9 +477,23 @@ export default function ShiftChangeBoard() {
                       </td>
                       <td className="px-3 py-3">
                         <ShiftChip shiftKey={s.baseShiftKey} options={options} />
+                        {s.altAnchor ? (
+                          <span
+                            className="mt-1 block w-fit rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300"
+                            title={`${fmtDmy(s.altAnchor)} dan boshlab bir kun ish, bir kun dam`}
+                          >
+                            Kun ora · {fmtDmy(s.altAnchor)} dan
+                          </span>
+                        ) : null}
                       </td>
                       <td className="px-3 py-3">
-                        <ShiftChip shiftKey={s.todayShiftKey} options={options} />
+                        {s.altAnchor && boardQ.data && altWorks(s.altAnchor, boardQ.data.today) === false ? (
+                          <span className="inline-flex rounded-full border border-rose-300 bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200">
+                            Dam kuni
+                          </span>
+                        ) : (
+                          <ShiftChip shiftKey={s.todayShiftKey} options={options} />
+                        )}
                       </td>
                       <td className="px-3 py-3">
                         <WeekStrip week={s.week} todayWeekday={todayWeekday} />
@@ -430,6 +518,14 @@ export default function ShiftChangeBoard() {
               </span>
             ))}
             <span className="flex items-center gap-1">
+              <span className="h-2.5 w-2.5 rounded bg-emerald-500" />
+              Kun ora: ish kuni
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2.5 w-2.5 rounded bg-rose-400" />
+              Kun ora: dam kuni
+            </span>
+            <span className="flex items-center gap-1">
               <span className="h-2.5 w-2.5 rounded ring-2 ring-rose-400" />
               Almashtirilgan kun
             </span>
@@ -440,6 +536,7 @@ export default function ShiftChangeBoard() {
       <ShiftEditorDialog
         person={selected}
         options={options}
+        today={boardQ.data?.today}
         todayWeekday={todayWeekday}
         onClose={() => setSelectedId(null)}
         onSaved={invalidate}
@@ -454,6 +551,7 @@ export default function ShiftChangeBoard() {
 function ShiftEditorDialog({
   person,
   options,
+  today,
   todayWeekday,
   onClose,
   onSaved,
@@ -461,6 +559,7 @@ function ShiftEditorDialog({
 }: {
   person: ShiftBoardStaff | null;
   options: ShiftBoardOption[];
+  today?: string;
   todayWeekday?: number;
   onClose: () => void;
   onSaved: () => void;
@@ -469,12 +568,14 @@ function ShiftEditorDialog({
   const [baseKey, setBaseKey] = useState<SlotShiftKey | null>(null);
   const [days, setDays] = useState<number[]>([]);
   const [dayShift, setDayShift] = useState<SlotShiftKey | null>(null);
+  const [altAnchor, setAltAnchor] = useState<string>("");
 
   const personId = person?.employeeId ?? null;
   useEffect(() => {
     setBaseKey(person?.baseShiftKey ?? null);
     setDays([]);
     setDayShift(null);
+    setAltAnchor(person?.altAnchor || today || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personId]);
 
@@ -512,6 +613,15 @@ function ShiftEditorDialog({
     onError: (e: Error) => notify("Saqlanmadi", e.message, true),
   });
 
+  const altMut = useMutation({
+    mutationFn: (anchor: string | null) => saveAltDays({ employeeId: person!.employeeId, anchor }),
+    onSuccess: (res) => {
+      notify(res.anchor ? "Kun ora ishlash saqlandi ✓" : "Kun ora ishlash o‘chirildi ✓", res.message);
+      onSaved();
+    },
+    onError: (e: Error) => notify("Saqlanmadi", e.message, true),
+  });
+
   const previewWeek = useMemo(() => {
     if (!person) return [];
     return person.week.map((d) =>
@@ -532,8 +642,11 @@ function ShiftEditorDialog({
   }, [previewWeek]);
 
   if (!person) return null;
-  const busy = baseMut.isPending || overrideMut.isPending || clearOneMut.isPending;
+  const busy = baseMut.isPending || overrideMut.isPending || clearOneMut.isPending || altMut.isPending;
   const baseChanged = baseKey != null && baseKey !== person.baseShiftKey;
+  const altValid = /^\d{4}-\d{2}-\d{2}$/.test(altAnchor);
+  const altChanged = altValid && altAnchor !== person.altAnchor;
+  const altFrom = today && altValid && altAnchor < today ? today : altAnchor;
 
   const toggleDay = (d: number) =>
     setDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort((a, b) => a - b)));
@@ -683,6 +796,67 @@ function ShiftEditorDialog({
                 ))}
               </div>
             ) : null}
+          </section>
+
+          {/* 3. Kun ora ishlash */}
+          <section className="space-y-3 rounded-xl border border-border p-3.5">
+            <div>
+              <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">3</span>
+                Kun ora ishlash — bir kun ish, bir kun dam
+                {person.altAnchor ? (
+                  <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    Yoqilgan
+                  </span>
+                ) : null}
+              </h3>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Birinchi ish kunini tanlang: shu kun ish, ertasi dam, keyingisi yana ish va hokazo. Ish kunlari xodim
+                yuqoridagi smenada ishlaydi. Dam kunlarida kelmagani uchun jarima yozilmaydi va eslatma yuborilmaydi.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="space-y-1 text-[11px] font-semibold text-foreground">
+                <span>Birinchi ish kuni</span>
+                <Input
+                  type="date"
+                  value={altAnchor}
+                  onChange={(e) => setAltAnchor(e.target.value)}
+                  className="h-9 w-[170px] text-xs"
+                />
+              </label>
+              {person.altAnchor ? (
+                <p className="pb-2 text-[11px] text-muted-foreground">
+                  Hozir: <strong className="text-foreground">{fmtDmy(person.altAnchor)}</strong> dan boshlab kun ora
+                </p>
+              ) : (
+                <p className="pb-2 text-[11px] text-muted-foreground">Hozir: oddiy jadval (kun ora emas)</p>
+              )}
+            </div>
+
+            {altValid && altFrom ? (
+              <div className="rounded-xl bg-muted/50 p-3">
+                <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
+                  <CalendarRange className="h-3.5 w-3.5 text-primary" />
+                  Keyingi 14 kun (saqlangandan keyin):
+                </p>
+                <AltDaysStrip anchor={altAnchor} from={altFrom} />
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap justify-end gap-2">
+              {person.altAnchor ? (
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => altMut.mutate(null)}>
+                  <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                  Kun orani o‘chirish
+                </Button>
+              ) : null}
+              <Button size="sm" disabled={!altChanged || busy} onClick={() => altMut.mutate(altAnchor)}>
+                {altMut.isPending ? <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                {person.altAnchor ? "Kun orani yangilash" : "Kun ora ishlashni yoqish"}
+              </Button>
+            </div>
           </section>
 
           <div className="space-y-1 rounded-xl border border-emerald-300/60 bg-emerald-50/70 p-3 text-[11px] text-emerald-900 dark:border-emerald-800/40 dark:bg-emerald-950/20 dark:text-emerald-200">

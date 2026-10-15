@@ -227,6 +227,13 @@ CREATE TABLE IF NOT EXISTS shift_day_swaps (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS shift_day_swaps_emp_day_uidx ON shift_day_swaps (employee_id, work_date) WHERE cancelled_at IS NULL;
 CREATE INDEX IF NOT EXISTS shift_day_swaps_date_idx ON shift_day_swaps (work_date);
+CREATE TABLE IF NOT EXISTS employee_alt_days (
+  employee_id INTEGER PRIMARY KEY,
+  anchor TEXT NOT NULL,
+  updated_by_id INTEGER,
+  updated_by_name TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `);
       const today = todayTashkentYmd();
       for (const [scope, rest] of SEED_RULES) {
@@ -261,11 +268,13 @@ type Snapshot = {
   restSwaps: Map<string, ShiftSwap>;
   workSwaps: Map<string, ShiftSwap>;
   swaps: ShiftSwap[];
+  /** Kun ora ishlash: employeeId → birinchi ish kuni (YYYY-MM-DD) */
+  altDays: Map<number, string>;
   at: number;
 };
 
 const SNAPSHOT_TTL_MS = 30_000;
-let snapshot: Snapshot = { calendars: new Map(), restSwaps: new Map(), workSwaps: new Map(), swaps: [], at: 0 };
+let snapshot: Snapshot = { calendars: new Map(), restSwaps: new Map(), workSwaps: new Map(), swaps: [], altDays: new Map(), at: 0 };
 let loading: Promise<Snapshot> | null = null;
 let generation = 0;
 
@@ -309,11 +318,14 @@ export const SWAP_SELECT = `
 
 async function readSnapshot(): Promise<Snapshot> {
   await ensureWorkCalendarSchema();
-  const [rules, days, swaps] = await Promise.all([
+  const [rules, days, swaps, alt] = await Promise.all([
     pool.query(`SELECT * FROM work_calendar_rules ORDER BY scope, effective_from`),
     pool.query(`SELECT day, is_work FROM work_calendar_days`),
     pool.query(`${SWAP_SELECT} WHERE s.cancelled_at IS NULL ORDER BY s.work_date`),
+    pool.query(`SELECT employee_id, anchor FROM employee_alt_days`),
   ]);
+  const altDays = new Map<number, string>();
+  for (const row of alt.rows) altDays.set(Number(row.employee_id), String(row.anchor));
   const rulesByScope = new Map<string, RestRule[]>();
   for (const row of rules.rows) {
     const rule = rowToRule(row);
@@ -338,7 +350,7 @@ async function readSnapshot(): Promise<Snapshot> {
     restSwaps.set(`${swap.employeeId}|${swap.workDate}`, swap);
     workSwaps.set(`${swap.replacementEmployeeId}|${swap.workDate}`, swap);
   }
-  return { calendars, restSwaps, workSwaps, swaps: list, at: Date.now() };
+  return { calendars, restSwaps, workSwaps, swaps: list, altDays, at: Date.now() };
 }
 
 export async function loadWorkCalendar(force = false): Promise<Snapshot> {
@@ -395,4 +407,21 @@ export function scopeDayStatus(scope: string, ymd: string): { work: boolean; rea
 
 export function snapshotSwaps(): ShiftSwap[] {
   return snapshot.swaps;
+}
+
+function ymdDayNumber(ymd: string): number {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return Math.floor(Date.UTC(y!, m! - 1, d!) / 86_400_000);
+}
+
+/** Kun ora: anchor — ish kuni, ertasi dam. Anchor sanasidan oldingi kunlarga ta’sir qilmaydi. */
+export function isAltWorkDay(anchor: string, ymd: string): boolean {
+  return Math.abs(ymdDayNumber(ymd) - ymdDayNumber(anchor)) % 2 === 0;
+}
+
+export function altDayOn(employeeId: number | null | undefined, ymd: string): { work: boolean; anchor: string } | null {
+  if (!employeeId || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const anchor = snapshot.altDays.get(employeeId);
+  if (!anchor || ymd < anchor) return null;
+  return { work: isAltWorkDay(anchor, ymd), anchor };
 }
