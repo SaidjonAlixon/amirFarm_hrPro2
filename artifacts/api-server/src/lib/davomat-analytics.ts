@@ -456,10 +456,14 @@ function classifyCheckIn(
 ): { status: "on_time" | "late"; lateMinutes: number } {
   if (!checkInHm || checkInHm === "—") return { status: "on_time", lateMinutes: 0 };
   const grace = graceMinutesFor(schedule);
-  const checkMin = hmToMinutes(checkInHm);
-  const graceEndMin = hmToMinutes(schedule.start) + grace;
-  if (checkMin <= graceEndMin) return { status: "on_time", lateMinutes: 0 };
-  return { status: "late", lateMinutes: checkMin - hmToMinutes(schedule.start) };
+  let diff = hmToMinutes(checkInHm) - hmToMinutes(schedule.start);
+  if (schedule.overnight) {
+    // Tungi smena (masalan 24:00): 23:50 — erta, 00:10 — kechikish
+    diff = ((diff % 1440) + 1440) % 1440;
+    if (diff > 720) diff -= 1440;
+  }
+  if (diff <= grace) return { status: "on_time", lateMinutes: 0 };
+  return { status: "late", lateMinutes: diff };
 }
 
 function classifyStaffDay(

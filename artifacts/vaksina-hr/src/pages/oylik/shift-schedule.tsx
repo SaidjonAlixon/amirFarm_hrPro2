@@ -204,15 +204,20 @@ const durationText = (mins: number) => {
   return h && m ? `${h} soat ${m} daq` : h ? `${h} soat` : `${m} daq`;
 };
 
+/** 3-smena 24:00 (tun yarmi) — soat tanlagichda 00:00, saqlanganda server yana 24:00 qiladi */
+function pickerHm(v: string | null | undefined): string {
+  return v === "24:00" ? "00:00" : v ?? "";
+}
+
 function HoursEditor({ data, schedule }: { data: WorkCalendarData; schedule: ScopeSchedule }) {
   const { toast } = useToast();
   const save = useSaveShiftHours();
   const hours = schedule.hours;
-  const [start, setStart] = useState(hours?.start ?? "");
+  const [start, setStart] = useState(pickerHm(hours?.start));
   const [end, setEnd] = useState(hours?.end ?? "");
   const [brk, setBrk] = useState(String(hours?.breakMin ?? 0));
   useEffect(() => {
-    setStart(hours?.start ?? "");
+    setStart(pickerHm(hours?.start));
     setEnd(hours?.end ?? "");
     setBrk(String(hours?.breakMin ?? 0));
   }, [schedule.scope, hours?.start, hours?.end, hours?.breakMin]);
@@ -401,7 +406,7 @@ function HoursEditor({ data, schedule }: { data: WorkCalendarData; schedule: Sco
             Vaqtni saqlash
           </Button>
           {dirty ? (
-            <Button type="button" variant="ghost" className="h-9" onClick={() => { setStart(hours.start); setEnd(hours.end); setBrk(String(hours.breakMin ?? 0)); }}>
+            <Button type="button" variant="ghost" className="h-9" onClick={() => { setStart(pickerHm(hours.start)); setEnd(hours.end); setBrk(String(hours.breakMin ?? 0)); }}>
               Bekor qilish
             </Button>
           ) : null}

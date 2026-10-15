@@ -354,12 +354,14 @@ router.put("/work-calendar/hours", requireAuth, async (req: AuthRequest, res): P
   if (!canManageSettings(req.userRole)) return deny(res, "Smena vaqtini faqat admin yoki direktor o‘zgartiradi");
   const scope = String(req.body?.scope || "");
   const reset = req.body?.reset === true;
-  const start = normalizeHm(String(req.body?.start || ""));
+  let start = normalizeHm(String(req.body?.start || ""));
   const end = normalizeHm(String(req.body?.end || ""));
   if (!reset && (!start || !end)) {
     res.status(400).json({ error: "Boshlanish va tugash vaqtini HH:MM ko‘rinishida kiriting" });
     return;
   }
+  // 3-smena tun yarmida boshlansa — smena kuni oldingi kun bo‘lib qoladi (24:00, tungi)
+  if (scope === "dorixona:3" && start === "00:00") start = "24:00";
   if (!reset && start === end) {
     res.status(400).json({ error: "Boshlanish va tugash bir xil bo‘lmasin" });
     return;

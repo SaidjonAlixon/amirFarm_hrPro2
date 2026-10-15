@@ -1,6 +1,7 @@
 import {
   parseShiftKeys,
   plannedInterval,
+  type ShiftDefinition,
   type ShiftKey,
 } from "./attendance-engine";
 
@@ -31,6 +32,8 @@ export function resolveAttendanceWorkDate(opts: {
     status?: string | null;
   } | null;
   yesterdayYmd: string;
+  /** Admin sozlagan smena vaqtlari (bo‘lmasa standart) */
+  defs?: Record<ShiftKey, ShiftDefinition>;
 }): { workDate: string; reason: string } {
   const { todayYmd, yesterdayYmd, now, todayRec, yesterdayRec } = opts;
   const keys = parseShiftKeys(opts.shiftType, opts.shiftLabel) as ShiftKey[];
@@ -54,9 +57,17 @@ export function resolveAttendanceWorkDate(opts: {
     return { workDate: yesterdayYmd, reason: "open_overnight" };
   }
 
-  // 3-smena start: kechqurun 23:00 — workDate = today
   if (keys.includes("three")) {
-    const plan = plannedInterval(todayYmd, "three");
+    const shiftKey = keys.join("+");
+    // Kechagi tungi smena hali davom etmoqda (masalan 24:00–08:00, kelish 00:10) — kechagi kun
+    if (!yesterdayRec?.checkInAt) {
+      const prev = plannedInterval(yesterdayYmd, shiftKey, opts.defs);
+      const t = now.getTime();
+      if (t >= prev.startMs - 60 * 60_000 && t < prev.endMs) {
+        return { workDate: yesterdayYmd, reason: "three_overnight_start" };
+      }
+    }
+    const plan = plannedInterval(todayYmd, shiftKey, opts.defs);
     if (now.getTime() >= plan.startMs - 60 * 60_000) {
       return { workDate: todayYmd, reason: "three_start" };
     }

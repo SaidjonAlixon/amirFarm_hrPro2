@@ -394,14 +394,20 @@ const ATTEMPT_STATUS: Record<string, string> = {
   annulled: "Bekor",
 };
 
+/** Tungi smena (masalan 24:00): 23:50 — erta (manfiy), 00:10 — 10 daqiqa kechikish */
+function arrivalDiffMin(arrived: number, start: number, overnight: boolean): number {
+  if (!overnight) return arrived - start;
+  const d = (((arrived - start) % 1440) + 1440) % 1440;
+  return d > 720 ? d - 1440 : d;
+}
+
 /** Kelish smena boshlanishi + ruxsat daqiqasidan keyin bo‘lsa kechikkan. */
 function lateMinutesOf(checkInHm: string | null, schedule: WorkSchedule): number {
   if (!checkInHm) return 0;
-  let arrived = hmToMinutes(checkInHm);
+  const arrived = hmToMinutes(checkInHm);
   const start = hmToMinutes(schedule.start);
   if (!Number.isFinite(arrived) || !Number.isFinite(start)) return 0;
-  if (schedule.overnight && arrived < start) arrived += 24 * 60;
-  return Math.max(0, arrived - start);
+  return Math.max(0, arrivalDiffMin(arrived, start, Boolean(schedule.overnight)));
 }
 
 function earlyMinutesOf(checkInHm: string | null, checkOutHm: string | null, schedule: WorkSchedule): number {
@@ -412,8 +418,8 @@ function earlyMinutesOf(checkInHm: string | null, checkOutHm: string | null, sch
   const arrived = hmToMinutes(checkInHm);
   if (![start, end, left, arrived].every(Number.isFinite)) return 0;
   if (schedule.overnight || end <= start) {
-    end += 24 * 60;
-    if (left < arrived) left += 24 * 60;
+    const wrapped = (((end - left) % 1440) + 1440) % 1440;
+    return wrapped > 0 && wrapped < 12 * 60 ? wrapped : 0;
   }
   const diff = end - left;
   return diff > 0 && diff < 16 * 60 ? diff : 0;
@@ -421,11 +427,10 @@ function earlyMinutesOf(checkInHm: string | null, checkOutHm: string | null, sch
 
 function cameStatus(checkInHm: string, schedule: WorkSchedule): "present" | "late" {
   const grace = schedule.graceMinutes > 0 ? schedule.graceMinutes : 15;
-  let arrived = hmToMinutes(checkInHm);
+  const arrived = hmToMinutes(checkInHm);
   const start = hmToMinutes(schedule.start);
   if (!Number.isFinite(arrived) || !Number.isFinite(start)) return "present";
-  if (schedule.overnight && arrived < start) arrived += 24 * 60;
-  return arrived - start > grace ? "late" : "present";
+  return arrivalDiffMin(arrived, start, Boolean(schedule.overnight)) > grace ? "late" : "present";
 }
 
 function scheduleForDay(

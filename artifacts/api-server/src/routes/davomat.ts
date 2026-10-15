@@ -3815,6 +3815,7 @@ async function applyFacePunch(opts: {
     shiftLabel: effectiveShiftLabel,
     todayRec,
     yesterdayRec,
+    defs,
   });
   const workDate = resolvedWd.workDate;
   // Ish kuni aniqlangach — shu kun rejasini ustun qo‘yamiz
@@ -4744,6 +4745,7 @@ router.get("/davomat/me/workplace", requireAuth, async (req: AuthRequest, res): 
       shiftLabel,
       todayRec,
       yesterdayRec,
+      defs,
     }).workDate;
     const [rec] =
       workDate === today
@@ -5063,6 +5065,7 @@ router.get("/davomat/me/status", requireAuth, async (req: AuthRequest, res): Pro
         shiftLabel: planToday ? null : emp.shiftLabel,
         todayRec,
         yesterdayRec,
+        defs: await getEffectiveShiftDefs(),
       }).workDate;
       const rec =
         workDate === today ? todayRec : workDate === yesterday ? yesterdayRec : undefined;
