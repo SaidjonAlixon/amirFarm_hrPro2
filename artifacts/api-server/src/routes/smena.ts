@@ -82,6 +82,25 @@ async function empByUserId(userId: number): Promise<EmpRow | null> {
   return row ?? null;
 }
 
+/** Admin / HR hisoblarida xodim kartochkasi bo‘lmaydi — boshqaruv uchun virtual qator */
+async function actorEmp(userId: number, role: string): Promise<EmpRow | null> {
+  const row = await empByUserId(userId);
+  if (row || !canManageSmenaFilial(role)) return row;
+  return {
+    id: -userId,
+    userId,
+    fullName: "",
+    orgRole: null,
+    reportsToId: null,
+    assignedBranchId: null,
+    shiftType: null,
+    location: null,
+    latitude: null,
+    longitude: null,
+    employmentStatus: null,
+  };
+}
+
 async function empById(id: number): Promise<EmpRow | null> {
   const [row] = await db.select(EMP_COLS).from(employeesTable).where(eq(employeesTable.id, id)).limit(1);
   return row ?? null;
@@ -256,7 +275,7 @@ function applyShiftTypePatch(
 
 router.get("/smena/me", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const role = req.userRole || "";
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   const pharmacy = isPharmacyShiftStaff(role, me?.orgRole);
   const defs = await getEffectiveShiftDefs();
   const officeW = shiftWindow("office", null, defs);
@@ -315,7 +334,7 @@ router.get("/smena/me", requireAuth, async (req: AuthRequest, res): Promise<void
     canDayRotate: canManage,
     canManageSlots: canManage,
     viewOnly: !canManage,
-    employee: me
+    employee: me && me.id > 0
       ? {
           id: me.id,
           fullName: me.fullName,
@@ -363,7 +382,7 @@ router.patch("/smena/me", requireAuth, async (req: AuthRequest, res): Promise<vo
     });
     return;
   }
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;
@@ -416,7 +435,7 @@ router.patch("/smena/assign/:employeeId", requireAuth, async (req: AuthRequest, 
     });
     return;
   }
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Sizning xodim kartochkangiz yo‘q" });
     return;
@@ -531,7 +550,7 @@ router.post("/smena/rotation", requireAuth, async (req: AuthRequest, res): Promi
     });
     return;
   }
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;
@@ -713,7 +732,7 @@ router.post("/smena/rotation", requireAuth, async (req: AuthRequest, res): Promi
 /** Tanlangan kundagi rotatsiyalar (doira ichida) */
 router.get("/smena/rotations", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const role = req.userRole || "";
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;
@@ -782,7 +801,7 @@ router.get("/smena/rotations", requireAuth, async (req: AuthRequest, res): Promi
 router.delete("/smena/rotation/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const role = req.userRole || "";
   if (denyCoordinatorEdit(role, res)) return;
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;
@@ -895,7 +914,7 @@ async function syncPrimaryFromSlots(employeeId: number): Promise<void> {
 /** Xodimning barcha ish slotlari */
 router.get("/smena/slots", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const role = req.userRole || "";
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;
@@ -951,7 +970,7 @@ router.get("/smena/slots/all", requireAuth, async (req: AuthRequest, res): Promi
     res.status(403).json({ error: "Smena va filial ro‘yxati faqat HR menejer va Adminga berilgan." });
     return;
   }
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;
@@ -1046,7 +1065,7 @@ router.post("/smena/slots", requireAuth, async (req: AuthRequest, res): Promise<
   try {
     const role = req.userRole || "";
     if (denyNonAdminOrHr(role, res)) return;
-    const me = await empByUserId(req.userId!);
+    const me = await actorEmp(req.userId!, role);
     if (!me) {
       res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
       return;
@@ -1269,7 +1288,7 @@ router.post("/smena/slots", requireAuth, async (req: AuthRequest, res): Promise<
 router.delete("/smena/slots/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const role = req.userRole || "";
   if (denyNonAdminOrHr(role, res)) return;
-  const me = await empByUserId(req.userId!);
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;
@@ -1301,7 +1320,7 @@ router.patch("/smena/slots/:id", requireAuth, async (req: AuthRequest, res): Pro
   try {
     const role = req.userRole || "";
     if (denyNonAdminOrHr(role, res)) return;
-    const me = await empByUserId(req.userId!);
+    const me = await actorEmp(req.userId!, role);
     if (!me) {
       res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
       return;
@@ -1401,19 +1420,10 @@ router.patch("/smena/shift-only/:employeeId", requireAuth, async (req: AuthReque
   try {
     const role = req.userRole || "";
     if (denyNonAdminOrHr(role, res)) return;
-    const me = await empByUserId(req.userId!);
-    if (!me) {
-      res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
-      return;
-    }
     const employeeId = Number(req.params.employeeId);
     const target = await empById(employeeId);
     if (!target) {
       res.status(404).json({ error: "Xodim topilmadi" });
-      return;
-    }
-    if (isMudirPerson(target.orgRole)) {
-      res.status(400).json({ error: "Mudirga smena, filial va rotatsiya qo‘yilmaydi" });
       return;
     }
     if (!isPharmacyShiftStaff(null, target.orgRole)) {
@@ -1560,7 +1570,10 @@ router.get("/smena/shift-board", requireAuth, async (req: AuthRequest, res): Pro
         .select(EMP_COLS)
         .from(employeesTable)
         .where(sql`coalesce(${employeesTable.employmentStatus}, 'working') <> 'dismissed'`)
-    ).filter((p) => STAFF_ORG.has(p.orgRole || "") && !isOpenHireSlot(p));
+    ).filter(
+      (p) =>
+        (STAFF_ORG.has(p.orgRole || "") || (p.orgRole === MANAGER_ORG && p.userId != null)) && !isOpenHireSlot(p),
+    );
 
     const ids = people.map((p) => p.id);
     const slotRows = ids.length
@@ -1663,8 +1676,8 @@ router.post("/smena/shift-override", requireAuth, async (req: AuthRequest, res):
       res.status(404).json({ error: "Xodim topilmadi" });
       return;
     }
-    if (!STAFF_ORG.has(target.orgRole || "")) {
-      res.status(400).json({ error: "Smena faqat farmasevt va stajyor uchun" });
+    if (!isPharmacyShiftStaff(null, target.orgRole)) {
+      res.status(400).json({ error: "Smena faqat mudir, farmasevt va stajyor uchun" });
       return;
     }
 
@@ -1823,7 +1836,8 @@ router.post("/smena/shift-override", requireAuth, async (req: AuthRequest, res):
 
 /** Bugungi kun rejasini ko‘rish */
 router.get("/smena/slots/day-plan", requireAuth, async (req: AuthRequest, res): Promise<void> => {
-  const me = await empByUserId(req.userId!);
+  const role = req.userRole || "";
+  const me = await actorEmp(req.userId!, role);
   if (!me) {
     res.status(400).json({ error: "Xodim kartochkasi yo‘q" });
     return;

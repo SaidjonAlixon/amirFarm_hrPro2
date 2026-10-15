@@ -81,6 +81,7 @@ const SHIFT_SHORT: Record<SlotShiftKey, string> = {
 };
 
 function orgLabel(org: string | null) {
+  if (org === "manager") return "Mudir";
   if (org === "pharmacist") return "Farmasevt";
   if (org === "intern") return "Stajyor";
   return "Xodim";
