@@ -265,6 +265,10 @@ export async function matchFaceForAuth(
   };
 }
 
+/**
+ * Asosiy: lokal embedding ↔ baza (darhol, AI siz).
+ * OpenAI faqat FACE_AI_VERIFY=1 va lokal aniq match bo‘lmaganda (ixtiyoriy).
+ */
 export async function matchFaceForAuthWithAi(
   descriptor: number[] | number[][],
   liveSnapshot?: unknown,
@@ -272,34 +276,39 @@ export async function matchFaceForAuthWithAi(
   | { ok: true; id: number; userId: number; dist: number; cosine: number }
   | { ok: false; error: string; code: string; neighbors?: FaceNeighbor[] }
 > {
-  const {
-    FACE_AI_GALLERY_MAX,
-    inspectLiveAntiSpoof,
-    isFaceAiEnabled,
-    resolveLoginIdentityWithAi,
-  } = await import("./face-ai-verify");
-  if (!isFaceAiEnabled()) return matchFaceForAuth(descriptor);
+  const local = await matchFaceForAuth(descriptor);
+  if (local.ok) {
+    logger.info(
+      {
+        event: "face_verify",
+        ok: true,
+        mode: "local",
+        userId: local.userId,
+        dist: Number(local.dist.toFixed(4)),
+        cosine: Number(local.cosine.toFixed(4)),
+      },
+      "face local match ok",
+    );
+    return local;
+  }
 
-  const anti = await inspectLiveAntiSpoof(liveSnapshot, "login");
-  if (!anti.ok) return { ok: false, error: anti.error, code: anti.code };
+  const { FACE_AI_GALLERY_MAX, FACE_AI_SOFT_DIST, isFaceAiEnabled, resolveLoginIdentityWithAi } =
+    await import("./face-ai-verify");
+  if (!isFaceAiEnabled()) return local;
 
   const probes = (Array.isArray(descriptor[0]) ? descriptor : [descriptor]) as number[][];
   const rows = await loadFaceRows();
   const candidates = listAuthCandidates(probes, rows, Math.max(FACE_AI_GALLERY_MAX, 3));
-  if (!candidates.length) {
-    return {
-      ok: false,
-      error: "Bu yuz tizimda ro‘yxatdan o‘tmagan.",
-      code: "face_not_registered",
-    };
-  }
+  const top = candidates[0];
+  if (!top || top.dist > FACE_AI_SOFT_DIST) return local;
+
   const resolved = await resolveLoginIdentityWithAi({
     liveSnapshot,
-    skipAntiSpoof: true,
+    skipAntiSpoof: false,
     candidates: candidates.map((c) => ({ id: c.id, userId: c.userId, dist: c.dist, cosine: c.cosine })),
   });
   if (!resolved.ok) {
-    return { ok: false, error: resolved.error, code: resolved.code };
+    return { ok: false, error: resolved.error, code: resolved.code, neighbors: local.neighbors };
   }
   logger.info(
     {
@@ -392,20 +401,19 @@ export async function matchFaceForOwnerWithAi(
     bestDist <= OWNER_DIST_OK &&
     bestCosine >= OWNER_COS_OK;
 
-  const {
-    confirmOwnerFaceWithAi,
-    inspectLiveAntiSpoof,
-    isFaceAiEnabled,
-  } = await import("./face-ai-verify");
-
-  if (!isFaceAiEnabled()) {
-    if (!localOk) {
-      logger.info(
-        { event: "face_owner_verify", ok: false, userId, dist: Number(bestDist.toFixed(4)) },
-        "face owner local mismatch",
-      );
-      return notOwner;
-    }
+  /** Lokal mos — darhol qabul (AI chaqirilmaydi). */
+  if (localOk) {
+    logger.info(
+      {
+        event: "face_owner_verify",
+        ok: true,
+        userId,
+        mode: "local",
+        dist: Number(bestDist.toFixed(4)),
+        cosine: Number(bestCosine.toFixed(4)),
+      },
+      "face owner local ok",
+    );
     return {
       ok: true,
       id: profile.id,
@@ -415,12 +423,16 @@ export async function matchFaceForOwnerWithAi(
     };
   }
 
-  const anti = await inspectLiveAntiSpoof(liveSnapshot, "login");
-  if (!anti.ok) {
-    /** Spoof aniq — rad. Lokal juda yaxshi bo‘lsa ham telefon rasm bo‘lishi mumkin. */
-    return { ok: false, error: anti.error, code: anti.code, fullName: name };
+  const { confirmOwnerFaceWithAi, isFaceAiEnabled } = await import("./face-ai-verify");
+  if (!isFaceAiEnabled()) {
+    logger.info(
+      { event: "face_owner_verify", ok: false, userId, dist: Number(bestDist.toFixed(4)) },
+      "face owner local mismatch",
+    );
+    return notOwner;
   }
 
+  /** Lokal uzoq — faqat AI yoqilganda so‘nggi urinish. */
   const ai = await confirmOwnerFaceWithAi({
     faceProfileId: profile.id,
     liveSnapshot,
@@ -449,49 +461,20 @@ export async function matchFaceForOwnerWithAi(
     };
   }
 
-  /** AI rad etdi, lekin lokal aniq mos — egasi (yorug‘lik farqi). */
-  if (localOk && ai.code !== "face_ai_spoof") {
-    logger.info(
-      {
-        event: "face_owner_verify",
-        ok: true,
-        userId,
-        mode: "local_fallback",
-        dist: Number(bestDist.toFixed(4)),
-        aiCode: ai.code,
-      },
-      "face owner local ok after AI uncertain",
-    );
-    return {
-      ok: true,
-      id: profile.id,
-      userId: profile.userId,
-      dist: bestDist,
-      cosine: bestCosine,
-    };
+  logger.info(
+    {
+      event: "face_owner_verify",
+      ok: false,
+      userId,
+      code: ai.code,
+      dist: Number(bestDist.toFixed(4)),
+    },
+    "face owner mismatch",
+  );
+  if (ai.code === "face_ai_spoof") {
+    return { ok: false, error: ai.error, code: ai.code, fullName: name };
   }
-
-  /** AI «boshqa odam» deb aniq aytdi yoki lokal ham uzoq. */
-  if (ai.code === "face_ai_mismatch" || !localOk) {
-    logger.info(
-      {
-        event: "face_owner_verify",
-        ok: false,
-        userId,
-        code: ai.code,
-        dist: Number(bestDist.toFixed(4)),
-      },
-      "face owner mismatch",
-    );
-    return notOwner;
-  }
-
-  return {
-    ok: false,
-    error: ai.error || "Yuzni qayta tekshiring — yorug‘ joyda kameraga tik qarang.",
-    code: ai.code || "face_ai_mismatch",
-    fullName: name,
-  };
+  return notOwner;
 }
 
 function envNum(name: string, fallback: number): number {

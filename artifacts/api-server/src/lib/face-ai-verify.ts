@@ -57,17 +57,17 @@ export const FACE_AI_GALLERY_MAX = Math.max(1, Math.min(4, envNum("FACE_AI_GALLE
 export const FACE_AI_PAIRWISE_MAX = Math.max(1, Math.min(5, envNum("FACE_AI_PAIRWISE_MAX", 3)));
 /** Enroll duplicate AI — baza rasmi bilan solishtirish. */
 export const FACE_AI_DUP_MAX = Math.max(0, Math.min(3, envNum("FACE_AI_DUP_MAX", 2)));
-/** Enroll sifat + anti-spoof AI. */
-export const FACE_AI_ENROLL_INSPECT = envFlag("FACE_AI_ENROLL_INSPECT", true);
-/** Login oldidan jonsiz rasm (telefon/print) tekshiruvi. */
-export const FACE_AI_ANTISPOOF = envFlag("FACE_AI_ANTISPOOF", true);
+/** Enroll sifat + anti-spoof AI (default o‘chirilgan — token). */
+export const FACE_AI_ENROLL_INSPECT = envFlag("FACE_AI_ENROLL_INSPECT", false);
+/** Login oldidan jonsiz rasm (telefon/print) tekshiruvi (default o‘chirilgan). */
+export const FACE_AI_ANTISPOOF = envFlag("FACE_AI_ANTISPOOF", false);
 /** Gallery match dan keyin qo‘shimcha confirm — default o‘chirilgan. */
 export const FACE_AI_CONFIRM = envFlag("FACE_AI_CONFIRM", false);
 /**
- * Aniq lokal match bo‘lsa ham baza rasmi bilan AI tasdiq majburiy (noto‘g‘ri odam ochilmasin).
- * 1 = faqat lokal (tavsiya etilmaydi).
+ * Aniq lokal match bo‘lsa OpenAI ga bormaslik (default: ha — tez va bepul).
+ * FACE_AI_SKIP_IF_CLEAR=0 — eski rejim: aniq matchda ham AI.
  */
-export const FACE_AI_SKIP_IF_CLEAR = envFlag("FACE_AI_SKIP_IF_CLEAR", false);
+export const FACE_AI_SKIP_IF_CLEAR = envFlag("FACE_AI_SKIP_IF_CLEAR", true);
 export const FACE_AI_CLEAR_MARGIN = envNum("FACE_AI_CLEAR_MARGIN", 0.08);
 export const FACE_AI_MAX_IMAGE_CHARS = envNum("FACE_AI_MAX_IMAGE_CHARS", 180_000);
 export const FACE_AI_SOFT_DIST = envNum("FACE_AI_SOFT_DIST", 0.48);
@@ -75,8 +75,13 @@ export const FACE_AI_SOFT_DIST = envNum("FACE_AI_SOFT_DIST", 0.48);
 export const FACE_AI_MIN_CONFIDENCE = envNum("FACE_AI_MIN_CONFIDENCE", 0.9);
 export const FACE_AI_MIN_SIMILARITY = envNum("FACE_AI_MIN_SIMILARITY", 0.88);
 
+/**
+ * OpenAI Face ID — default O‘CHIRILGAN.
+ * Asosiy tanish: brauzer embedding + serverda baza bilan euclidean/cosine (tez, bepul).
+ * Yoqish: FACE_AI_VERIFY=1 va OPENAI_API_KEY.
+ */
 export function isFaceAiEnabled(): boolean {
-  if (!envFlag("FACE_AI_VERIFY", true)) return false;
+  if (!envFlag("FACE_AI_VERIFY", false)) return false;
   return Boolean(process.env.OPENAI_API_KEY?.trim());
 }
 

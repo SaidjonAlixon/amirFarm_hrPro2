@@ -17,11 +17,11 @@ export const FACE_DESCRIPTOR_LEN = 128;
  *  — bir odam, yorug‘lik/burchak: ~0.12–0.38
  *  — o‘xshash boshqa odam: ~0.45–0.70
  *  — begona: odatda > 0.55
- * Login: dist ≤ 0.34 va cosine ≥ 0.942 (FP past).
- * Enroll block: faqat markaz kadr, dist ≤ 0.36 (yonbosh kadrlar boshqa odamga o‘xshab ketmasin).
+ * Login: dist ≤ 0.42 va cosine ≥ 0.91 (yorug‘lik/burchak farqiga chidamli, AI siz).
+ * Enroll block: faqat deyarli bir xil vektor (hijob/o‘xshash yuzni bloklamaslik).
  */
-export const FACE_MATCH_MAX = envNum("FACE_MATCH_THRESHOLD", 0.34);
-export const FACE_MATCH_MIN_COSINE = envNum("FACE_MATCH_MIN_COSINE", 0.942);
+export const FACE_MATCH_MAX = envNum("FACE_MATCH_THRESHOLD", 0.42);
+export const FACE_MATCH_MIN_COSINE = envNum("FACE_MATCH_MIN_COSINE", 0.91);
 export const FACE_AMBIGUOUS_MARGIN = envNum("FACE_AMBIGUOUS_MARGIN", 0.08);
 export const FACE_AMBIGUOUS_RATIO = envNum("FACE_AMBIGUOUS_RATIO", 0.72);
 /** Faqat deyarli bir xil vektor — hijob/o‘xshash yuzni yangi akkauntga yozishni to‘xtatmasin. */
@@ -199,9 +199,29 @@ export function bestPerUser(probes: number[][], rows: StoredFace[]): FaceHit[] {
   return [...byUser.values()].sort((a, b) => a.dist - b.dist);
 }
 
-/** Login identifikasiya — faqat 1-kadr (markaz). Yonbosh kadr boshqa odamga o‘xshab ketmasin. */
+/**
+ * Login identifikatsiya: birinchi (markaz) kadr asosiy.
+ * Keyingi kadrlar faqat birinchisiga yaqin bo‘lsa o‘rtachaga qo‘shiladi —
+ * yonbosh/noto‘g‘ri kadr boshqa odamni ochmaydi, yaxshi juft esa chidamliroq.
+ */
 export function identityProbes(probes: number[][]): number[][] {
-  return probes[0] ? [probes[0]] : [];
+  const valid = probes.filter((p) => Array.isArray(p) && p.length === FACE_DESCRIPTOR_LEN);
+  if (!valid.length) return [];
+  const first = l2normalize(valid[0]!);
+  if (valid.length === 1) return [first];
+  const keep: number[][] = [first];
+  for (let i = 1; i < valid.length; i++) {
+    const next = l2normalize(valid[i]!);
+    if (euclidean(first, next) <= 0.28) keep.push(next);
+  }
+  if (keep.length === 1) return [first];
+  const n = FACE_DESCRIPTOR_LEN;
+  const acc = new Array<number>(n).fill(0);
+  for (const p of keep) {
+    for (let i = 0; i < n; i++) acc[i]! += p[i]!;
+  }
+  for (let i = 0; i < n; i++) acc[i]! /= keep.length;
+  return [l2normalize(acc)];
 }
 
 export function pickAuthMatch(
@@ -210,12 +230,25 @@ export function pickAuthMatch(
 ):
   | { ok: true; id: number; userId: number; dist: number; cosine: number }
   | { ok: false; code: "face_not_registered" | "face_ambiguous"; best?: FaceHit; second?: FaceHit } {
-  const ranked = bestPerUser(identityProbes(probes), rows);
+  const list = identityProbes(probes);
+  if (!list.length) return { ok: false, code: "face_not_registered" };
+  const ranked = bestPerUser(list, rows);
   const best = ranked[0];
+  const second = ranked[1];
   if (!best || !isSamePerson(best.dist, best.cosine, FACE_MATCH_MAX)) {
     return { ok: false, code: "face_not_registered", best };
   }
-  /** Eng yaqin yagona egasi — o‘chirish yo‘q, boshqa xodim ham yopilmaydi. */
+  /**
+   * Ikkinchi eng yaqin ham threshold ichida va deyarli teng — chalkashlik.
+   * Eng yaqin aniq yetakchi bo‘lsa (margin) — egasi ochiladi.
+   */
+  if (
+    second &&
+    isSamePerson(second.dist, second.cosine, FACE_MATCH_MAX) &&
+    second.dist - best.dist < FACE_AMBIGUOUS_MARGIN * 0.5
+  ) {
+    return { ok: false, code: "face_ambiguous", best, second };
+  }
   return { ok: true, id: best.id, userId: best.userId, dist: best.dist, cosine: best.cosine };
 }
 

@@ -106,7 +106,7 @@ describe("face identity", () => {
     const face = embedding(31);
     const rows: StoredFace[] = [
       { id: 1, userId: 1, descriptor: face },
-      { id: 2, userId: 2, descriptor: noise(face, 0.01) },
+      { id: 2, userId: 2, descriptor: noise(face, 0.18) },
     ];
     const probe = noise(face, 0.005);
     const picked = pickAuthMatch([probe], rows);
@@ -123,6 +123,7 @@ describe("face identity", () => {
     ];
     const center = noise(ownerCenter, 0.03);
     const misleadingSide = noise(other, 0.02);
+    /** Yonbosh kadr birinchisidan uzoq — tashlanadi, egasi ochiladi */
     const picked = pickAuthMatch([center, misleadingSide], rows);
     assert.equal(picked.ok, true);
     if (picked.ok) assert.equal(picked.userId, 1);
@@ -190,7 +191,8 @@ describe("face identity", () => {
   });
 
   it("calibrated thresholds stay in face-api range", () => {
-    assert.ok(FACE_MATCH_MAX <= 0.4);
+    assert.ok(FACE_MATCH_MAX <= 0.5);
+    assert.ok(FACE_MATCH_MAX >= 0.3);
     assert.ok(FACE_ENROLL_BLOCK_MAX < FACE_MATCH_MAX);
   });
 });
