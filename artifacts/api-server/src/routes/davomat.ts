@@ -4562,11 +4562,13 @@ router.get("/davomat/me/workplace", requireAuth, async (req: AuthRequest, res): 
       Number.isFinite(qLng)
     ) {
       fieldBranchPunch = true;
-      let mobileAnywherePreview = false;
-      try {
-        mobileAnywherePreview = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
-      } catch {
-        mobileAnywherePreview = false;
+      let mobileAnywherePreview = hasFullPlatformAccess(user.role);
+      if (!mobileAnywherePreview) {
+        try {
+          mobileAnywherePreview = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
+        } catch {
+          mobileAnywherePreview = false;
+        }
       }
       const fieldGate = await resolveReviziyaFieldGate({
         emp,
@@ -4605,11 +4607,13 @@ router.get("/davomat/me/workplace", requireAuth, async (req: AuthRequest, res): 
       Number.isFinite(qLng)
     ) {
       coordinatorFieldPunch = true;
-      let mobileAnywherePreview = false;
-      try {
-        mobileAnywherePreview = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
-      } catch {
-        mobileAnywherePreview = false;
+      let mobileAnywherePreview = hasFullPlatformAccess(user.role);
+      if (!mobileAnywherePreview) {
+        try {
+          mobileAnywherePreview = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
+        } catch {
+          mobileAnywherePreview = false;
+        }
       }
       const coordGate = await resolveCoordinatorGeoGate({
         emp,
@@ -4780,11 +4784,13 @@ router.get("/davomat/me/workplace", requireAuth, async (req: AuthRequest, res): 
     }
     // Smena vaqti tashqarisida ham Keldim/Ketdim ochiq — faqat biriktirilgan filial GPS talab
 
-    let mobileAnywhere = false;
-    try {
-      mobileAnywhere = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
-    } catch {
-      mobileAnywhere = false;
+    let mobileAnywhere = hasFullPlatformAccess(user.role);
+    if (!mobileAnywhere) {
+      try {
+        mobileAnywhere = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
+      } catch {
+        mobileAnywhere = false;
+      }
     }
 
     const coordinatorAtOffice = user.role === "koordinator" && point.kind === "office";
@@ -7801,11 +7807,13 @@ router.post("/davomat/qr-punch", requireAuth, async (req: AuthRequest, res): Pro
       fenceRadius = site.radiusM || TAMOJNI_DEFAULT_RADIUS_M;
     }
 
-    let mobileAnywhere = false;
-    try {
-      mobileAnywhere = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
-    } catch {
-      mobileAnywhere = false;
+    let mobileAnywhere = hasFullPlatformAccess(user.role);
+    if (!mobileAnywhere) {
+      try {
+        mobileAnywhere = await employeeHasMobileAnywhere(emp.id, emp.userId ?? user.id);
+      } catch {
+        mobileAnywhere = false;
+      }
     }
     const skipOfficeGeofence = adminAnywhere || mobileAnywhere;
 

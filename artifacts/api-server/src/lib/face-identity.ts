@@ -17,11 +17,11 @@ export const FACE_DESCRIPTOR_LEN = 128;
  *  — bir odam, yorug‘lik/burchak: ~0.12–0.38
  *  — o‘xshash boshqa odam: ~0.45–0.70
  *  — begona: odatda > 0.55
- * Login: dist ≤ 0.42 va cosine ≥ 0.91 (yorug‘lik/burchak farqiga chidamli, AI siz).
+ * Login: dist ≤ 0.48 va cosine ≥ 0.88 (yorug‘lik/burchak farqiga chidamli, AI siz).
  * Enroll block: faqat deyarli bir xil vektor (hijob/o‘xshash yuzni bloklamaslik).
  */
-export const FACE_MATCH_MAX = envNum("FACE_MATCH_THRESHOLD", 0.42);
-export const FACE_MATCH_MIN_COSINE = envNum("FACE_MATCH_MIN_COSINE", 0.91);
+export const FACE_MATCH_MAX = envNum("FACE_MATCH_THRESHOLD", 0.48);
+export const FACE_MATCH_MIN_COSINE = envNum("FACE_MATCH_MIN_COSINE", 0.88);
 export const FACE_AMBIGUOUS_MARGIN = envNum("FACE_AMBIGUOUS_MARGIN", 0.08);
 export const FACE_AMBIGUOUS_RATIO = envNum("FACE_AMBIGUOUS_RATIO", 0.72);
 /** Faqat deyarli bir xil vektor — hijob/o‘xshash yuzni yangi akkauntga yozishni to‘xtatmasin. */

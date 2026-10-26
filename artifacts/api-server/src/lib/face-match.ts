@@ -350,9 +350,9 @@ export async function matchFaceForOwnerWithAi(
     code: "face_not_owner",
     fullName: name,
   };
-  /** Owner 1:1 — gallery dan yumshoqroq (yorug‘lik/burchak). */
-  const OWNER_DIST_OK = Math.max(FACE_MATCH_MAX, envNum("FACE_OWNER_MATCH_MAX", 0.48));
-  const OWNER_COS_OK = Math.min(FACE_MATCH_MIN_COSINE, envNum("FACE_OWNER_MIN_COSINE", 0.88));
+  /** Owner 1:1 — gallery dan yumshoqroq (yorug‘lik/burchak / eski enroll). */
+  const OWNER_DIST_OK = Math.max(FACE_MATCH_MAX, envNum("FACE_OWNER_MATCH_MAX", 0.55));
+  const OWNER_COS_OK = Math.min(FACE_MATCH_MIN_COSINE, envNum("FACE_OWNER_MIN_COSINE", 0.85));
 
   const [profile] = await db
     .select({
