@@ -3361,12 +3361,15 @@ async function geoGate(
   /** Hudud tasdiqi: ko‘chma ruxsat hisobga olinmaydi, faqat o‘z yashil hududi */
   requireOwnZone = false,
 ): Promise<GeoGateOk | { ok: false; status: number; body: Record<string, unknown> }> {
-  // Admin bergan ko‘chma ruxsat — yashil zona (geofence) talab qilinmaydi
-  let mobileAnywhere = false;
-  try {
-    mobileAnywhere = await employeeHasMobileAnywhere(emp.id, emp.userId);
-  } catch {
-    mobileAnywhere = false;
+  // Admin bergan ko‘chma ruxsat — yashil zona (geofence) talab qilinmaydi.
+  // Platforma admin / direktor / asoschi — Face ID va barmoq izi ham istalgan joydan.
+  let mobileAnywhere = hasFullPlatformAccess(userRole);
+  if (!mobileAnywhere) {
+    try {
+      mobileAnywhere = await employeeHasMobileAnywhere(emp.id, emp.userId);
+    } catch {
+      mobileAnywhere = false;
+    }
   }
   if (requireOwnZone) mobileAnywhere = false;
 
@@ -5624,11 +5627,6 @@ router.post("/davomat/face-punch", async (req, res): Promise<void> => {
       });
       return;
     }
-    const staleGps = stalePunchGps(req.body?.gpsCapturedAt, req.body?.accuracy);
-    if (staleGps) {
-      res.status(403).json(staleGps);
-      return;
-    }
     if (!action) {
       res.status(400).json({ error: "action: in | out", code: "action_required" });
       return;
@@ -5637,15 +5635,29 @@ router.post("/davomat/face-punch", async (req, res): Promise<void> => {
     const sessionUserId = await readSessionUserId(req);
     let expectedUserId: number | undefined;
     let expectedFullName: string | undefined;
+    let sessionRole: string | undefined;
     if (sessionUserId) {
       const [sess] = await db
-        .select({ id: usersTable.id, fullName: usersTable.fullName, status: usersTable.status })
+        .select({
+          id: usersTable.id,
+          fullName: usersTable.fullName,
+          status: usersTable.status,
+          role: usersTable.role,
+        })
         .from(usersTable)
         .where(eq(usersTable.id, sessionUserId))
         .limit(1);
       if (sess && (sess.status === "active" || sess.status === "on_leave")) {
         expectedUserId = sess.id;
         expectedFullName = sess.fullName;
+        sessionRole = sess.role;
+      }
+    }
+    if (!hasFullPlatformAccess(sessionRole)) {
+      const staleGps = stalePunchGps(req.body?.gpsCapturedAt, req.body?.accuracy);
+      if (staleGps) {
+        res.status(403).json(staleGps);
+        return;
       }
     }
 
@@ -5774,11 +5786,6 @@ router.post("/davomat/fingerprint/punch", requireAuth, async (req: AuthRequest, 
       res.status(400).json({ error: "GPS majburiy — lokatsiyaga ruxsat bering", code: "gps_required" });
       return;
     }
-    const staleGps = stalePunchGps(req.body?.gpsCapturedAt, req.body?.accuracy);
-    if (staleGps) {
-      res.status(403).json(staleGps);
-      return;
-    }
     if (!action) {
       res.status(400).json({ error: "action: in | out", code: "action_required" });
       return;
@@ -5799,6 +5806,13 @@ router.post("/davomat/fingerprint/punch", requireAuth, async (req: AuthRequest, 
     if (!user || (user.status !== "active" && user.status !== "on_leave")) {
       res.status(403).json({ error: "Profil faol emas", code: "user_inactive" });
       return;
+    }
+    if (!hasFullPlatformAccess(user.role)) {
+      const staleGps = stalePunchGps(req.body?.gpsCapturedAt, req.body?.accuracy);
+      if (staleGps) {
+        res.status(403).json(staleGps);
+        return;
+      }
     }
     let emp: WorkplaceEmp;
     try {
