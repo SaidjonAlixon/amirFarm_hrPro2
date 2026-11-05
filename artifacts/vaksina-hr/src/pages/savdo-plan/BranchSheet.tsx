@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BadgePercent,
@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/money-format";
 import {
   dayLabel,
+  dayWithWeekday,
   downloadSavdoExcel,
   fetchSavdoSheet,
   monthLabel,
@@ -633,10 +634,25 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
   const visibleDays = editing ? sheet.days.filter((d) => d.date <= sheet.today) : sheet.days.filter((d) => !d.isFuture || d.hasData);
   const cell = "whitespace-nowrap px-3 py-2 text-center tabular-nums";
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const todayRowRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    const box = scrollRef.current;
+    const row = todayRowRef.current;
+    if (!box || !row) return;
+    box.scrollTop = Math.max(0, row.offsetTop - box.clientHeight + row.offsetHeight * 3);
+  }, [sheet.branch.id, month, editing]);
+
   return (
     <Panel
       title="Kundalik savdo jadvali"
       icon={CalendarDays}
+      center={
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-primary to-sky-500 px-3.5 py-1 text-xs font-semibold text-white shadow-sm">
+          <CalendarDays className="h-3.5 w-3.5" />
+          Bugun: {dayWithWeekday(sheet.today)}
+        </span>
+      }
       right={
         <div className="flex items-center gap-2">
           <span className="hidden text-[11px] text-muted-foreground sm:inline">
@@ -678,7 +694,8 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
           Jadval rejimi: istalgan o‘tgan kun va xodim katagiga summa yozing, 0 — o‘chiradi. Oxirida «Hammasini saqlash»ni bosing.
         </p>
       ) : null}
-      <div className="max-h-[620px] overflow-auto">
+      {/* maxHeight qator balandligi (tr h-10 = 40px) bilan bog‘liq: 15 kun + sarlavha + jami */}
+      <div ref={scrollRef} className="overflow-auto" style={{ maxHeight: 44 + 15 * 40 + 42 }}>
         <table className="w-full min-w-[960px] text-[13px]">
           <thead className="sticky top-0 z-10 whitespace-nowrap bg-muted/90 text-[11px] font-semibold text-muted-foreground backdrop-blur">
             <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-center">
@@ -706,7 +723,11 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
                 : d.total;
               const diff = total - d.dailyPlan;
               return (
-                <tr key={d.date} className={cn(d.isToday && "bg-primary/5", !d.hasData && !editRow && "text-muted-foreground")}>
+                <tr
+                  key={d.date}
+                  ref={d.isToday ? todayRowRef : undefined}
+                  className={cn("h-10", d.isToday && "bg-primary/5", !d.hasData && !editRow && "text-muted-foreground")}
+                >
                   <td className={cn("sticky left-0 whitespace-nowrap bg-card px-3 py-2 text-left font-semibold", d.isToday && "bg-primary/5 text-primary")}>
                     {d.day}
                     {d.isToday ? <span className="ml-1 text-[9px] font-medium">bugun</span> : null}

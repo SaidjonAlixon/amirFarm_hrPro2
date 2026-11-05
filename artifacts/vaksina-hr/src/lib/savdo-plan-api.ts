@@ -221,6 +221,15 @@ export function dayLabel(ymd: string): string {
   return `${d}-${MONTHS_UZ[(m ?? 1) - 1]!.toLowerCase()}`;
 }
 
+const WEEKDAYS_UZ = ["yakshanba", "dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba"];
+
+/** «5-noyabr, payshanba» */
+export function dayWithWeekday(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const wd = new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay();
+  return `${dayLabel(ymd)}, ${WEEKDAYS_UZ[wd]}`;
+}
+
 export function pctText(v: number, digits = 1): string {
   return `${(v * 100).toFixed(digits).replace(/\.0+$/, "")}%`;
 }

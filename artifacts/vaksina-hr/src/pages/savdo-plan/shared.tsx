@@ -152,23 +152,31 @@ export function Panel({
   title,
   icon: Icon,
   right,
+  center,
   children,
   className,
 }: {
   title: string;
   icon?: React.ComponentType<{ className?: string }>;
   right?: React.ReactNode;
+  center?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
     <section className={cn("flex min-w-0 flex-col rounded-xl border border-border bg-card shadow-sm", className)}>
-      <div className="flex items-center justify-between gap-2 border-b px-4 py-2.5">
+      <div
+        className={cn(
+          "gap-2 border-b px-4 py-2.5",
+          center ? "grid grid-cols-1 items-center md:grid-cols-[1fr_auto_1fr]" : "flex items-center justify-between",
+        )}
+      >
         <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
           {Icon ? <Icon className="h-4 w-4 text-primary" /> : null}
           {title}
         </h3>
-        {right}
+        {center ? <div className="justify-self-center">{center}</div> : null}
+        {center ? <div className="justify-self-end">{right}</div> : right}
       </div>
       <div className="min-w-0 flex-1">{children}</div>
     </section>
