@@ -223,11 +223,14 @@ export function dayLabel(ymd: string): string {
 
 const WEEKDAYS_UZ = ["yakshanba", "dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba"];
 
+export function weekdayLabel(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return WEEKDAYS_UZ[new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay()]!;
+}
+
 /** «5-noyabr, payshanba» */
 export function dayWithWeekday(ymd: string): string {
-  const [y, m, d] = ymd.split("-").map(Number);
-  const wd = new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay();
-  return `${dayLabel(ymd)}, ${WEEKDAYS_UZ[wd]}`;
+  return `${dayLabel(ymd)}, ${weekdayLabel(ymd)}`;
 }
 
 export function pctText(v: number, digits = 1): string {

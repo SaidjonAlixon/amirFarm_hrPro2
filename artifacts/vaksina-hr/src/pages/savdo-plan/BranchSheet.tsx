@@ -25,6 +25,7 @@ import {
   dayLabel,
   dayWithWeekday,
   downloadSavdoExcel,
+  weekdayLabel,
   fetchSavdoSheet,
   monthLabel,
   pctText,
@@ -694,8 +695,8 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
           Jadval rejimi: istalgan o‘tgan kun va xodim katagiga summa yozing, 0 — o‘chiradi. Oxirida «Hammasini saqlash»ni bosing.
         </p>
       ) : null}
-      {/* maxHeight qator balandligi (tr h-10 = 40px) bilan bog‘liq: 15 kun + sarlavha + jami */}
-      <div ref={scrollRef} className="overflow-auto" style={{ maxHeight: 44 + 15 * 40 + 42 }}>
+      {/* maxHeight qator balandligi (tr h-12 = 48px) bilan bog‘liq: 15 kun + sarlavha + jami */}
+      <div ref={scrollRef} className="overflow-auto" style={{ maxHeight: 44 + 15 * 48 + 42 }}>
         <table className="w-full min-w-[960px] text-[13px]">
           <thead className="sticky top-0 z-10 whitespace-nowrap bg-muted/90 text-[11px] font-semibold text-muted-foreground backdrop-blur">
             <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-center">
@@ -726,11 +727,16 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
                 <tr
                   key={d.date}
                   ref={d.isToday ? todayRowRef : undefined}
-                  className={cn("h-10", d.isToday && "bg-primary/5", !d.hasData && !editRow && "text-muted-foreground")}
+                  className={cn("h-12", d.isToday && "bg-primary/5", !d.hasData && !editRow && "text-muted-foreground")}
                 >
-                  <td className={cn("sticky left-0 whitespace-nowrap bg-card px-3 py-2 text-left font-semibold", d.isToday && "bg-primary/5 text-primary")}>
-                    {d.day}
-                    {d.isToday ? <span className="ml-1 text-[9px] font-medium">bugun</span> : null}
+                  <td className={cn("sticky left-0 whitespace-nowrap bg-card px-3 py-1.5 text-left", d.isToday && "bg-primary/5")}>
+                    <div className="text-[13px] font-semibold leading-tight text-sky-700 dark:text-sky-300">{dayLabel(d.date)}</div>
+                    <div className="flex items-center gap-1.5 text-[11px] leading-tight text-violet-600 dark:text-violet-300">
+                      {weekdayLabel(d.date)}
+                      {d.isToday ? (
+                        <span className="rounded-full bg-primary px-1.5 py-px text-[9px] font-semibold text-primary-foreground">bugun</span>
+                      ) : null}
+                    </div>
                   </td>
                   {cols.map((e) =>
                     editRow ? (
