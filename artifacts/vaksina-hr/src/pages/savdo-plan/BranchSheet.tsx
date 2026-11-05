@@ -4,10 +4,10 @@ import {
   BadgePercent,
   CalendarDays,
   CheckCircle2,
+  Clock,
   Download,
   Info,
   Lock,
-  Plus,
   RefreshCw,
   Save,
   Target,
@@ -27,6 +27,7 @@ import {
   pctText,
   saveSavdoEntries,
   type SavdoSheet,
+  type StaffShift,
 } from "@/lib/savdo-plan-api";
 import { MoneyInput, ProgressBar, StatCard, orgRoleLabel, pctTone, som, somShort } from "./shared";
 
@@ -205,31 +206,27 @@ function EntryPanel({ sheet, month }: { sheet: SavdoSheet; month: string }) {
     : sheet.editableDates?.[0] ?? null;
   const [date, setDate] = useState<string | null>(defaultDate);
   const [values, setValues] = useState<Record<number, number | null>>({});
-  const [extra, setExtra] = useState<number[]>([]);
-  const [addPick, setAddPick] = useState("");
 
   useEffect(() => {
     setDate(defaultDate);
-    setExtra([]);
   }, [sheet.branch.id, month]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const day = sheet.days.find((d) => d.date === date) ?? null;
   const rows = useMemo(() => {
-    const ids = [...new Set([...sheet.editableEmployeeIds, ...extra])];
     const byId = new Map(sheet.employees.map((e) => [e.id, e]));
-    const cand = new Map(sheet.candidates.map((c) => [c.id, c]));
-    return ids
+    return [...new Set(sheet.editableEmployeeIds)]
       .map((id) => {
-        const e = byId.get(id) ?? cand.get(id);
+        const e = byId.get(id);
         return {
           id,
           fullName: e?.fullName || (id === sheet.viewerEmployeeId ? "Siz" : `#${id}`),
           orgRole: e?.orgRole ?? null,
           isSelf: id === sheet.viewerEmployeeId,
+          shift: sheet.shifts[id] ?? null,
         };
       })
       .sort((a, b) => Number(b.isSelf) - Number(a.isSelf));
-  }, [sheet, extra]);
+  }, [sheet]);
 
   useEffect(() => {
     const next: Record<number, number | null> = {};
@@ -319,6 +316,7 @@ function EntryPanel({ sheet, month }: { sheet: SavdoSheet; month: string }) {
                   <span className="truncate font-semibold text-foreground">{r.isSelf ? `${r.fullName} (siz)` : r.fullName}</span>
                   <span className="shrink-0 text-[10px] text-muted-foreground">{orgRoleLabel(r.orgRole)}</span>
                 </span>
+                <ShiftLine shift={r.shift} />
                 <MoneyInput
                   value={values[r.id] ?? null}
                   onChange={(n) => setValues((prev) => ({ ...prev, [r.id]: n }))}
@@ -327,38 +325,6 @@ function EntryPanel({ sheet, month }: { sheet: SavdoSheet; month: string }) {
               </label>
             ))}
           </div>
-
-          {isAdmin && sheet.candidates.length ? (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <select
-                value={addPick}
-                onChange={(e) => setAddPick(e.target.value)}
-                className="h-8 max-w-[260px] rounded-lg border border-border bg-background px-2 text-xs"
-              >
-                <option value="">Boshqa filial xodimini qo‘shish…</option>
-                {sheet.candidates
-                  .filter((c) => !rows.some((r) => r.id === c.id))
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.fullName} · {orgRoleLabel(c.orgRole)}
-                    </option>
-                  ))}
-              </select>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8"
-                disabled={!addPick}
-                onClick={() => {
-                  setExtra((prev) => [...prev, Number(addPick)]);
-                  setAddPick("");
-                }}
-              >
-                <Plus className="mr-1 h-3.5 w-3.5" />
-                Qo‘shish
-              </Button>
-            </div>
-          ) : null}
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-muted/50 p-3">
             <div className="text-xs text-muted-foreground">
@@ -380,6 +346,27 @@ function EntryPanel({ sheet, month }: { sheet: SavdoSheet; month: string }) {
         </>
       )}
     </section>
+  );
+}
+
+function ShiftLine({ shift }: { shift: StaffShift | null }) {
+  if (!shift) return null;
+  return (
+    <span className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 font-semibold text-primary">
+        <Clock className="h-3 w-3" />
+        {shift.label}
+      </span>
+      <span className="font-medium tabular-nums text-muted-foreground">
+        {shift.start}–{shift.end}
+        {shift.overnight ? " (ertasi kun)" : ""}
+      </span>
+      {shift.restToday ? (
+        <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-semibold text-amber-700 dark:text-amber-300" title={shift.restToday}>
+          Bugun dam
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -439,7 +426,7 @@ function DailyTable({ sheet, self }: { sheet: SavdoSheet; self: number | null })
   const s = sheet.summary;
   const cols = sheet.fullView ? sheet.employees : sheet.employees.filter((e) => e.id === self);
   const visibleDays = sheet.days.filter((d) => !d.isFuture || d.hasData);
-  const cell = "px-2.5 py-2 text-right tabular-nums";
+  const cell = "whitespace-nowrap px-3 py-2.5 text-right tabular-nums";
   return (
     <section className="rounded-2xl border border-border bg-card shadow-sm">
       <div className="flex items-center justify-between border-b px-4 py-3">
@@ -449,7 +436,7 @@ function DailyTable({ sheet, self }: { sheet: SavdoSheet; self: number | null })
         </span>
       </div>
       <div className="max-h-[560px] overflow-auto">
-        <table className="w-full min-w-[760px] text-xs">
+        <table className="w-full min-w-[960px] text-[13px]">
           <thead className="sticky top-0 z-10 bg-muted/90 text-[10px] uppercase tracking-wide text-muted-foreground backdrop-blur">
             <tr>
               <th className="sticky left-0 bg-muted/90 px-2.5 py-2 text-left">Kun</th>
@@ -470,7 +457,7 @@ function DailyTable({ sheet, self }: { sheet: SavdoSheet; self: number | null })
           <tbody className="divide-y divide-border/60">
             {visibleDays.map((d) => (
               <tr key={d.date} className={cn(d.isToday && "bg-primary/5", !d.hasData && "text-muted-foreground")}>
-                <td className={cn("sticky left-0 bg-card px-2.5 py-2 text-left font-semibold", d.isToday && "bg-primary/5 text-primary")}>
+                <td className={cn("sticky left-0 whitespace-nowrap bg-card px-3 py-2.5 text-left font-semibold", d.isToday && "bg-primary/5 text-primary")}>
                   {d.day}
                   {d.isToday ? <span className="ml-1 text-[9px] font-medium">bugun</span> : null}
                 </td>
@@ -497,7 +484,7 @@ function DailyTable({ sheet, self }: { sheet: SavdoSheet; self: number | null })
               </tr>
             ))}
           </tbody>
-          <tfoot className="sticky bottom-0 bg-muted/90 text-xs font-bold backdrop-blur">
+          <tfoot className="sticky bottom-0 bg-muted/90 text-[13px] font-bold backdrop-blur">
             <tr>
               <td className="sticky left-0 bg-muted/90 px-2.5 py-2 text-left">Jami</td>
               {cols.map((e) => (
@@ -536,7 +523,7 @@ function IncomeTable({ sheet }: { sheet: SavdoSheet }) {
         </span>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-xs">
+        <table className="w-full min-w-[760px] text-[13px]">
           <thead className="bg-muted/50 text-[10px] uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-3 py-2 text-left">Xodim</th>
@@ -548,7 +535,7 @@ function IncomeTable({ sheet }: { sheet: SavdoSheet }) {
               {showProjected ? <th className="px-3 py-2 text-right">Prognoz (oy oxiri)</th> : null}
             </tr>
           </thead>
-          <tbody className="divide-y divide-border/60">
+          <tbody className="divide-y divide-border/60 whitespace-nowrap">
             {sheet.employees.map((e) => (
               <tr key={e.id} className={cn(e.id === sheet.viewerEmployeeId && "bg-primary/5")}>
                 <td className="px-3 py-2.5">
@@ -556,7 +543,12 @@ function IncomeTable({ sheet }: { sheet: SavdoSheet }) {
                     {sheet.fullView && top && top.id === e.id && top.total > 0 ? <Trophy className="h-3.5 w-3.5 text-amber-500" /> : null}
                     {e.fullName}
                   </div>
-                  <div className="text-[10px] text-muted-foreground">{orgRoleLabel(e.orgRole)}</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {orgRoleLabel(e.orgRole)}
+                    {sheet.shifts[e.id]
+                      ? ` · ${sheet.shifts[e.id]!.label} ${sheet.shifts[e.id]!.start}–${sheet.shifts[e.id]!.end}`
+                      : ""}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-right font-semibold tabular-nums">{formatMoney(e.total)}</td>
                 {sheet.fullView ? (
@@ -579,7 +571,7 @@ function IncomeTable({ sheet }: { sheet: SavdoSheet }) {
             ))}
           </tbody>
           {sheet.fullView && sheet.employees.length > 1 ? (
-            <tfoot className="bg-muted/50 text-xs font-bold">
+            <tfoot className="whitespace-nowrap bg-muted/50 text-[13px] font-bold">
               <tr>
                 <td className="px-3 py-2">Jami</td>
                 <td className="px-3 py-2 text-right tabular-nums">{formatMoney(s.done)}</td>

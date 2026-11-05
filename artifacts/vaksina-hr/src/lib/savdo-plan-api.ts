@@ -64,6 +64,15 @@ export type SavdoContext = {
   branches: Array<{ id: number; name: string; managerName: string }>;
 };
 
+export type StaffShift = {
+  key: string;
+  label: string;
+  start: string;
+  end: string;
+  overnight: boolean;
+  restToday: string | null;
+};
+
 export type SavdoSheet = {
   branch: { id: number; name: string; managerName: string };
   fullView: boolean;
@@ -75,7 +84,7 @@ export type SavdoSheet = {
   editableEmployeeIds: number[];
   planUpdatedBy: string | null;
   planUpdatedAt: string | null;
-  candidates: Array<{ id: number; fullName: string; orgRole: string | null }>;
+  shifts: Record<number, StaffShift>;
   summary: SalesSummary;
   days: SalesDay[];
   employees: SalesEmployee[];

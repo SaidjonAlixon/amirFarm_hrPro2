@@ -1,12 +1,17 @@
 import { Router, type IRouter, type Response } from "express";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import ExcelJS from "exceljs";
-import { db, pool, employeesTable, employeeWorkSlotsTable, usersTable } from "@workspace/db";
+import { db, pool, employeesTable, employeeDayShiftPlansTable, employeeWorkSlotsTable, usersTable } from "@workspace/db";
 import { requireAuth, type AuthRequest } from "../middlewares/auth";
 import { hasFullPlatformAccess } from "../lib/roles";
 import { displayBranchName } from "../lib/geo-location";
 import { dedupeActiveBranches } from "../lib/branch-dedupe";
-import { slotCoversDate, type WorkSlotRow } from "../lib/work-slots";
+import { formatShiftKeyUz, resolveSlotsForDay, slotCoversDate, type WorkSlotRow } from "../lib/work-slots";
+import { shiftWindow } from "../lib/shift-hours";
+import { getEffectiveShiftDefs } from "../lib/shift-schedule";
+import { encodeShiftKeys, parseShiftKeys } from "../lib/attendance-engine";
+import { scheduledRestInfo } from "../lib/ofis-weekend";
+import { loadWorkCalendar } from "../lib/work-calendar";
 import {
   DEFAULT_TIERS,
   buildSalesSheet,
@@ -310,6 +315,69 @@ async function buildBranchSheet(branchId: number, month: string): Promise<{ shee
   return { sheet, staffIds };
 }
 
+export type StaffShift = {
+  key: string;
+  label: string;
+  start: string;
+  end: string;
+  overnight: boolean;
+  restToday: string | null;
+};
+
+/**
+ * Bugungi smena: kunlik reja → shu filialdagi bugungi slot → xodim kartasidagi asosiy smena.
+ * Vaqtlar «Smena sozlamalari»dan (3-smena 24:00–08:00 va h.k.).
+ */
+async function staffShifts(employeeIds: number[], branchId: number): Promise<Record<number, StaffShift>> {
+  if (!employeeIds.length) return {};
+  const today = todayTashkentYmd();
+  const [defs, emps, slots, plans] = await Promise.all([
+    getEffectiveShiftDefs(),
+    db
+      .select({
+        id: employeesTable.id,
+        orgRole: employeesTable.orgRole,
+        shiftType: employeesTable.shiftType,
+        shiftLabel: employeesTable.shiftLabel,
+      })
+      .from(employeesTable)
+      .where(inArray(employeesTable.id, employeeIds)),
+    db
+      .select()
+      .from(employeeWorkSlotsTable)
+      .where(and(inArray(employeeWorkSlotsTable.employeeId, employeeIds), eq(employeeWorkSlotsTable.active, true))),
+    db
+      .select({ employeeId: employeeDayShiftPlansTable.employeeId, shiftKeys: employeeDayShiftPlansTable.shiftKeys })
+      .from(employeeDayShiftPlansTable)
+      .where(and(inArray(employeeDayShiftPlansTable.employeeId, employeeIds), eq(employeeDayShiftPlansTable.workDate, today))),
+  ]);
+  await loadWorkCalendar();
+  const out: Record<number, StaffShift> = {};
+  for (const e of emps) {
+    const plan = plans.find((p) => p.employeeId === e.id);
+    const daySlots = resolveSlotsForDay(today, slots.filter((s) => s.employeeId === e.id).map(slotRow)).filter(
+      (s) => s.branchId === branchId,
+    );
+    const key = plan?.shiftKeys?.length
+      ? encodeShiftKeys(parseShiftKeys(JSON.stringify(plan.shiftKeys)))
+      : daySlots.length
+        ? encodeShiftKeys(daySlots.flatMap((s) => parseShiftKeys(s.shiftKey)))
+        : encodeShiftKeys(parseShiftKeys(e.shiftType, e.shiftLabel));
+    const w = shiftWindow(key, null, defs);
+    const label = formatShiftKeyUz(key);
+    const rest = scheduledRestInfo(today, { employeeId: e.id, orgRole: e.orgRole, shiftType: e.shiftType, shiftLabel: e.shiftLabel });
+    out[e.id] = {
+      key,
+      label: label.includes("+") ? `${label} smena` : label,
+      start: w.start,
+      end: w.end,
+      overnight: Boolean(w.overnight),
+      restToday: rest.rest ? rest.reason || "Dam kuni" : null,
+    };
+  }
+  return out;
+}
+
 /** Farmasevt/stajyor — faqat o‘z qatori; filial jami ko‘rinadi */
 function maskForStaff(sheet: SalesSheet, selfId: number | null): SalesSheet {
   return {
@@ -369,31 +437,8 @@ router.get("/savdo-plan/sheet", requireAuth, async (req: AuthRequest, res): Prom
           ? [viewer.employeeId]
           : [];
     const plan = (await planAmounts(month)).get(branchId);
-    let candidates: SheetEmployee[] = [];
-    if (viewer.isAdmin) {
-      const inSheet = new Set(sheet.employees.map((e) => e.id));
-      candidates = sortStaff(
-        (
-          await db
-            .select({
-              id: employeesTable.id,
-              fullName: employeesTable.fullName,
-              orgRole: employeesTable.orgRole,
-              userId: employeesTable.userId,
-              employmentStatus: employeesTable.employmentStatus,
-            })
-            .from(employeesTable)
-            .where(
-              and(
-                inArray(employeesTable.orgRole, PHARMACY_ORG),
-                sql`coalesce(${employeesTable.employmentStatus}, 'working') <> 'dismissed'`,
-              ),
-            )
-        )
-          .filter((p) => !inSheet.has(p.id) && !isOpenHireSlot(p) && (p.orgRole !== "manager" || p.userId != null))
-          .map((p) => ({ id: p.id, fullName: p.fullName, orgRole: p.orgRole })),
-      );
-    }
+    const visible = fullView ? sheet.employees.map((e) => e.id) : viewer.employeeId != null ? [viewer.employeeId] : [];
+    const shifts = await staffShifts(visible, branchId);
     res.json({
       branch: { id: branch.id, name: branch.name, managerName: branch.managerName },
       fullView,
@@ -405,7 +450,7 @@ router.get("/savdo-plan/sheet", requireAuth, async (req: AuthRequest, res): Prom
       editableEmployeeIds,
       planUpdatedBy: plan?.updatedByName ?? null,
       planUpdatedAt: plan?.updatedAt ?? null,
-      candidates,
+      shifts,
       ...(fullView ? sheet : maskForStaff(sheet, viewer.employeeId)),
     });
   } catch (err) {

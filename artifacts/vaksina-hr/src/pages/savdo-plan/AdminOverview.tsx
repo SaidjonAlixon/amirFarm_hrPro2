@@ -89,7 +89,7 @@ export function AdminOverview({ month, onOpenBranch }: { month: string; onOpenBr
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1080px] text-xs">
+          <table className="w-full min-w-[1200px] text-[13px]">
             <thead className="bg-muted/50 text-[10px] uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-3 py-2.5 text-left">Filial</th>
@@ -104,7 +104,7 @@ export function AdminOverview({ month, onOpenBranch }: { month: string; onOpenBr
                 <th className="px-3 py-2.5" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-border/60">
+            <tbody className="divide-y divide-border/60 whitespace-nowrap">
               {d.rows.map((r) => (
                 <tr key={r.branchId} className="hover:bg-muted/30">
                   <td className="px-3 py-2.5">
@@ -172,7 +172,7 @@ export function AdminOverview({ month, onOpenBranch }: { month: string; onOpenBr
                 </tr>
               ))}
             </tbody>
-            <tfoot className="bg-muted/50 text-xs font-bold">
+            <tfoot className="whitespace-nowrap bg-muted/50 text-[13px] font-bold">
               <tr>
                 <td className="px-3 py-2.5">Jami tarmoq</td>
                 <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(t.plan)}</td>
