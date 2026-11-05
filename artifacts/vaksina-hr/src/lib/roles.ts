@@ -669,3 +669,13 @@ export function canManageSmenaFilial(role?: string | null): boolean {
   return hasFullPlatformAccess(r) || isHrRole(r);
 }
 
+/** Savdo plan: filial xodimlari o‘z filialini ko‘radi, admin — barcha filiallar */
+export function canViewSavdoPlan(role?: string | null): boolean {
+  const r = normalizeUserRole(role);
+  return r === "mudir" || r === "farmasevt" || r === "stajyor" || hasFullPlatformAccess(r);
+}
+
+export function canManageSavdoPlan(role?: string | null): boolean {
+  return hasFullPlatformAccess(role);
+}
+

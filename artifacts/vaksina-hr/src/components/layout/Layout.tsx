@@ -35,6 +35,7 @@ import {
   BarChart3,
   Banknote,
   Calculator,
+  LineChart,
   Cpu,
   Wrench,
   HelpCircle,
@@ -81,7 +82,7 @@ import { LanguageSwitcher } from '@/components/language-switcher';
 import { useI18n, navLabelForPath } from '@/i18n/I18nProvider';
 import { updateMyProfile } from '@/lib/face-id';
 import { VerifiedBadge, VerifiedName } from "@/components/VerifiedBadge";
-import { isHrManager, isHrRole, isHrOversight, hasHrOversightNav, normalizeUserRole, isStajyor, canSeeHrRecruitment, isHrRecruitmentPath, canViewReviziya, canViewEmployees, canViewDavomat, canViewDavomatXatoliklar, canManageSettings, canManageUsers, canViewDistribyutsiya, canViewOmborxona, canViewKochmaAdmin, canViewHolat, canViewChecklistStatus, isDeptHeadRole, isLimitedOfficeStaffRole, isReviziyaRole, userRoleLabel, isDirectorRole, hasFullPlatformAccess, usesDavomatDashboardHome, isSbRole, canManageSmenaFilial } from "@/lib/roles";
+import { isHrManager, isHrRole, isHrOversight, hasHrOversightNav, normalizeUserRole, isStajyor, canSeeHrRecruitment, isHrRecruitmentPath, canViewReviziya, canViewEmployees, canViewDavomat, canViewDavomatXatoliklar, canManageSettings, canManageUsers, canViewDistribyutsiya, canViewOmborxona, canViewKochmaAdmin, canViewHolat, canViewChecklistStatus, isDeptHeadRole, isLimitedOfficeStaffRole, isReviziyaRole, userRoleLabel, isDirectorRole, hasFullPlatformAccess, usesDavomatDashboardHome, isSbRole, canManageSmenaFilial, canViewSavdoPlan } from "@/lib/roles";
 import { useTelegramMiniAppChrome } from '@/pages/tg-entry';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -142,7 +143,7 @@ const NAV_SECTIONS: {
     id: 'main',
     label: 'Asosiy',
     icon: Layers,
-    paths: ['/dashboard', '/kirish', '/preboarding', '/darsliklar', '/atestatsiya', '/javob-olish', '/javob-olish/holat', '/tashkiliy-tuzilma', '/oylik', '/tushuntirish-xatim', '/hisobkitob', '/reyting', '/reviziya', '/it'],
+    paths: ['/dashboard', '/kirish', '/preboarding', '/darsliklar', '/atestatsiya', '/javob-olish', '/javob-olish/holat', '/tashkiliy-tuzilma', '/savdo-plan', '/oylik', '/tushuntirish-xatim', '/hisobkitob', '/reyting', '/reviziya', '/it'],
   },
   {
     id: 'attendance',
@@ -859,6 +860,9 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
     if (location.startsWith('/smena-filial') && !canManageSmenaFilial(user.role)) {
       setLocation('/dashboard');
     }
+    if (location.startsWith('/savdo-plan') && !canViewSavdoPlan(user.role)) {
+      setLocation('/dashboard');
+    }
     if (location.startsWith('/logistika')) {
       setLocation('/dashboard');
     }
@@ -923,6 +927,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
   const txNav = { name: 'Tushuntirish xatlari', path: '/admin/tushuntirish-xatlari', icon: FileSignature };
   const txMyNav = { name: 'Tushuntirish xatim', path: '/tushuntirish-xatim', icon: FileSignature };
   const hisobNav = { name: 'Oylik hisob', path: '/hisobkitob', icon: Calculator };
+  const savdoPlanNav = { name: 'Savdo plan', path: '/savdo-plan', icon: LineChart };
   const reytingNav = { name: 'Reyting', path: '/reyting', icon: Trophy };
   const darsliklarNav = { name: 'Darsliklar', path: '/darsliklar', icon: BookOpen };
   const darslikJoylashNav = { name: 'Darslik joylash', path: '/admin/darsliklar', icon: Library };
@@ -950,6 +955,11 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
     // AyTi zayavka — barcha rollar (farmasevt, mudir, ofis, ...)
     if (!next.some((i) => i.path === '/it')) {
       next = [...next, itNav];
+    }
+    if (canViewSavdoPlan(role) && !next.some((i) => i.path === '/savdo-plan')) {
+      const dashIdx = next.findIndex((i) => i.path === '/dashboard');
+      const at = dashIdx >= 0 ? dashIdx + 1 : 0;
+      next = [...next.slice(0, at), savdoPlanNav, ...next.slice(at)];
     }
     if (isLimitedOfficeStaffRole(role)) {
       if (!next.some((i) => i.path === '/javob-olish')) {

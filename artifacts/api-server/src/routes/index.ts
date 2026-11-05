@@ -64,6 +64,7 @@ import vaksinamedRouter from "./vaksinamed";
 import publicFilialMapRouter from "./public-filial-map";
 import disciplineRouter from "./discipline";
 import explanationLettersRouter from "./explanation-letters";
+import savdoPlanRouter from "./savdo-plan";
 
 const router: IRouter = Router();
 
@@ -101,6 +102,7 @@ router.use(holatRouter);
 router.use(oylikRouter);
 router.use(workCalendarRouter);
 router.use(hisobkitobRouter);
+router.use(savdoPlanRouter);
 router.use(telegramRouter);
 router.use(reviziyaRouter);
 router.use(reviziyaVisitsRouter);

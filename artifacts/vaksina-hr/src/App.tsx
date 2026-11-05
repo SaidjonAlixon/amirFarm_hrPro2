@@ -41,6 +41,7 @@ const ChecklistPage = lazy(() => import('./pages/checklist/index'));
 const ChecklistHolatiPage = lazy(() => import('./pages/checklist-holati/index'));
 const OylikPage = lazy(() => import('./pages/oylik/index'));
 const HisobkitobPage = lazy(() => import('./pages/hisobkitob/index'));
+const SavdoPlanPage = lazy(() => import('./pages/savdo-plan/index'));
 const ReviziyaPage = lazy(() => import('./pages/reviziya/index'));
 const ReviziyaDocPage = lazy(() => import('./pages/reviziya/show'));
 const OpsDeptPage = lazy(() => import('./pages/ops-dept/index'));
@@ -245,6 +246,7 @@ function Router() {
       <ProtectedRoute path="/checklist-holati" component={ChecklistHolatiPage} />
       <ProtectedRoute path="/oylik" component={OylikPage} />
       <ProtectedRoute path="/hisobkitob" component={HisobkitobPage} />
+      <ProtectedRoute path="/savdo-plan" component={SavdoPlanPage} />
       <ProtectedRoute path="/reviziya/hujjat/:id" component={ReviziyaDocPage} />
       <ProtectedRoute path="/reviziya" component={ReviziyaPage} />
       <ProtectedRoute path="/it" component={ItDeptPage} />
