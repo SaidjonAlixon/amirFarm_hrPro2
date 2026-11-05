@@ -134,16 +134,68 @@ export function StatCard({
     bad: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
   }[tone];
   return (
-    <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-4 shadow-sm">
+    <div className="flex min-w-0 flex-col gap-1.5 rounded-xl border border-border bg-card px-3.5 py-3 shadow-sm">
       <div className="flex items-center gap-2">
-        <span className={cn("rounded-lg p-1.5", toneCls)}>
-          <Icon className="h-4 w-4" />
+        <span className={cn("rounded-md p-1", toneCls)}>
+          <Icon className="h-3.5 w-3.5" />
         </span>
-        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+        <span className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
       </div>
-      <div className="text-xl font-bold tabular-nums text-foreground">{value}</div>
+      <div className="truncate text-lg font-bold leading-tight tabular-nums text-foreground">{value}</div>
       {sub ? <div className="text-[11px] leading-snug text-muted-foreground">{sub}</div> : null}
       {children}
+    </div>
+  );
+}
+
+export function Panel({
+  title,
+  icon: Icon,
+  right,
+  children,
+  className,
+}: {
+  title: string;
+  icon?: React.ComponentType<{ className?: string }>;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cn("flex min-w-0 flex-col rounded-xl border border-border bg-card shadow-sm", className)}>
+      <div className="flex items-center justify-between gap-2 border-b px-4 py-2.5">
+        <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
+          {Icon ? <Icon className="h-4 w-4 text-primary" /> : null}
+          {title}
+        </h3>
+        {right}
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+    </section>
+  );
+}
+
+export function Medal({ rank }: { rank: number }) {
+  const cls =
+    rank === 1
+      ? "bg-amber-400 text-amber-950"
+      : rank === 2
+        ? "bg-slate-300 text-slate-800"
+        : rank === 3
+          ? "bg-orange-300 text-orange-950"
+          : "bg-muted text-muted-foreground";
+  return (
+    <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold", cls)}>{rank}</span>
+  );
+}
+
+/** Bajarilish va oyning o‘tgan qismi bitta chiziqda: marker — «shu kungacha bo‘lishi kerak» */
+export function PaceBar({ pct, timePct }: { pct: number; timePct: number }) {
+  const tone = pctTone(pct >= timePct ? 1 : pct);
+  return (
+    <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-muted">
+      <div className={cn("h-full rounded-full", tone.bar)} style={{ width: `${Math.min(100, pct * 100)}%` }} />
+      <div className="absolute inset-y-0 w-0.5 bg-foreground/70" style={{ left: `${Math.min(100, timePct * 100)}%` }} />
     </div>
   );
 }

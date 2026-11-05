@@ -41,6 +41,9 @@ export type SheetEmployeeSummary = SheetEmployee & {
   total: number;
   sharePct: number;
   daysWorked: number;
+  avgPerDay: number;
+  bestDay: { date: string; amount: number } | null;
+  rank: number;
   todayAmount: number;
   commissionPct: number;
   income: number;
@@ -70,6 +73,13 @@ export type SheetSummary = {
   commissionPct: number;
   projectedCommissionPct: number;
   nextTier: { from: number; pct: number; needAmount: number } | null;
+  /** Oyning o‘tgan qismi (kun bo‘yicha) — sur’at shu bilan solishtiriladi */
+  timePct: number;
+  /** Bajarilgan − (plan × timePct): musbat — plandan oldinda */
+  paceGap: number;
+  daysWithData: number;
+  daysAbovePlan: number;
+  bestDay: { date: string; total: number } | null;
   status: "past" | "current" | "future";
 };
 
@@ -222,31 +232,42 @@ export function buildSalesSheet(input: {
   const projectedCommissionPct = commissionFor(projectedPct, tiers);
   const next = nextTierFor(pct, tiers);
 
-  const totals = new Map<number, { total: number; days: number; today: number }>();
+  type Acc = { total: number; days: number; today: number; best: { date: string; amount: number } | null };
+  const totals = new Map<number, Acc>();
   for (const day of days) {
     for (const [idRaw, amount] of Object.entries(day.byEmployee)) {
       const id = Number(idRaw);
-      const t = totals.get(id) ?? { total: 0, days: 0, today: 0 };
+      const t = totals.get(id) ?? { total: 0, days: 0, today: 0, best: null };
       t.total += amount;
       if (amount > 0) t.days += 1;
       if (day.isToday) t.today += amount;
+      if (amount > 0 && (!t.best || amount > t.best.amount)) t.best = { date: day.date, amount };
       totals.set(id, t);
     }
   }
   const projectFactor = status === "current" && daysElapsed > 0 ? n / daysElapsed : 1;
+  const ranked = [...totals.entries()].filter(([, t]) => t.total > 0).sort((a, b) => b[1].total - a[1].total);
+  const rankOf = new Map(ranked.map(([id], i) => [id, i + 1]));
   const employees: SheetEmployeeSummary[] = input.employees.map((e) => {
-    const t = totals.get(e.id) ?? { total: 0, days: 0, today: 0 };
+    const t = totals.get(e.id) ?? { total: 0, days: 0, today: 0, best: null };
     return {
       ...e,
       total: round2(t.total),
       sharePct: done > 0 ? round4(t.total / done) : 0,
       daysWorked: t.days,
+      avgPerDay: t.days > 0 ? round2(t.total / t.days) : 0,
+      bestDay: t.best ? { date: t.best.date, amount: round2(t.best.amount) } : null,
+      rank: rankOf.get(e.id) ?? 0,
       todayAmount: round2(t.today),
       commissionPct,
       income: round2(t.total * commissionPct),
       projectedIncome: round2(t.total * projectFactor * projectedCommissionPct),
     };
   });
+
+  const timePct = status === "past" ? 1 : status === "current" ? daysElapsed / n : 0;
+  const withData = days.filter((d) => d.hasData);
+  const best = withData.reduce<SheetDay | null>((b, d) => (!b || d.total > b.total ? d : b), null);
 
   return {
     summary: {
@@ -271,6 +292,11 @@ export function buildSalesSheet(input: {
       commissionPct,
       projectedCommissionPct,
       nextTier: next ? { ...next, needAmount: round2(Math.max(0, next.from * plan - done)) } : null,
+      timePct: round4(timePct),
+      paceGap: round2(done - plan * timePct),
+      daysWithData: withData.length,
+      daysAbovePlan: plan > 0 ? withData.filter((d) => d.total >= dailyPlan).length : 0,
+      bestDay: best ? { date: best.date, total: best.total } : null,
       status,
     },
     days,

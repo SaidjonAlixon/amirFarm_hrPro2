@@ -2524,7 +2524,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
                 location.startsWith('/admin/kochma-xarita') ||
                 location.startsWith('/checklist-holati')
                 ? 'h-full max-w-none'
-                : location === '/pharmacy-network' || location.startsWith('/davomat/bloklash')
+                : location === '/pharmacy-network' || location.startsWith('/davomat/bloklash') || location.startsWith('/savdo-plan')
                   ? 'max-w-none'
                   : 'max-w-7xl',
             )}

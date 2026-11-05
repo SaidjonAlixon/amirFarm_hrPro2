@@ -451,11 +451,85 @@ router.get("/savdo-plan/sheet", requireAuth, async (req: AuthRequest, res): Prom
       planUpdatedBy: plan?.updatedByName ?? null,
       planUpdatedAt: plan?.updatedAt ?? null,
       shifts,
+      sellersCount: sheet.employees.filter((e) => e.total > 0).length,
       ...(fullView ? sheet : maskForStaff(sheet, viewer.employeeId)),
     });
   } catch (err) {
     console.error("GET /savdo-plan/sheet", err);
     deny(res, 500, "Savdo plan yuklanmadi");
+  }
+});
+
+async function writeEntries(
+  branchId: number,
+  items: Array<{ employeeId: number; date: string; amount: number }>,
+  actor: { userId: number | null; name: string | null },
+) {
+  await ensureSchema();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const p of items) {
+      if (p.amount === 0) {
+        await client.query(
+          `DELETE FROM sales_entries WHERE branch_id = $1 AND employee_id = $2 AND sale_date = $3`,
+          [branchId, p.employeeId, p.date],
+        );
+        continue;
+      }
+      await client.query(
+        `INSERT INTO sales_entries (branch_id, employee_id, sale_date, amount, entered_by_id, entered_by_name)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (branch_id, employee_id, sale_date) DO UPDATE SET
+           amount = EXCLUDED.amount, entered_by_id = EXCLUDED.entered_by_id,
+           entered_by_name = EXCLUDED.entered_by_name, updated_at = NOW()`,
+        [branchId, p.employeeId, p.date, p.amount, actor.userId, actor.name],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+function validDay(date: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number(date.slice(8, 10)) >= 1 && Number(date.slice(8, 10)) <= daysInMonth(date.slice(0, 7));
+}
+
+/** Admin: o‘tgan kunlarni jadval ko‘rinishida birdaniga kiritish (istalgan sana, bugungacha) */
+router.put("/savdo-plan/entries/bulk", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  if (!hasFullPlatformAccess(req.userRole)) return deny(res, 403, "Ko‘p kunlik kiritish faqat admin uchun");
+  try {
+    const branchId = Number(req.body?.branchId);
+    const items = Array.isArray(req.body?.items) ? (req.body.items as unknown[]) : [];
+    if (!items.length) return deny(res, 400, "O‘zgarish yo‘q");
+    if (items.length > 3000) return deny(res, 400, "Bir martada juda ko‘p yozuv");
+    const today = todayTashkentYmd();
+    const parsed: Array<{ employeeId: number; date: string; amount: number }> = [];
+    for (const raw of items) {
+      const r = raw as { employeeId?: unknown; date?: unknown; amount?: unknown };
+      const employeeId = Number(r.employeeId);
+      const date = String(r.date || "");
+      const amount = Number(r.amount);
+      if (!Number.isInteger(employeeId) || employeeId <= 0) return deny(res, 400, "Xodim noto‘g‘ri");
+      if (!validDay(date)) return deny(res, 400, `Sana noto‘g‘ri: ${date}`);
+      if (date > today) return deny(res, 400, "Kelgusi kun uchun savdo kiritib bo‘lmaydi");
+      if (!Number.isFinite(amount) || amount < 0 || amount > MAX_AMOUNT) return deny(res, 400, "Summa noto‘g‘ri");
+      parsed.push({ employeeId, date, amount: Math.round(amount * 100) / 100 });
+    }
+    const branches = await listBranches();
+    if (!branches.some((b) => b.id === branchId)) return deny(res, 404, "Filial topilmadi");
+    const known = new Set((await namesFor([...new Set(parsed.map((p) => p.employeeId))])).map((e) => e.id));
+    if (parsed.some((p) => !known.has(p.employeeId))) return deny(res, 404, "Xodim topilmadi");
+    const [actor] = await db.select({ fullName: usersTable.fullName }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
+    await writeEntries(branchId, parsed, { userId: req.userId ?? null, name: actor?.fullName || null });
+    res.json({ ok: true, saved: parsed.length });
+  } catch (err) {
+    console.error("PUT /savdo-plan/entries/bulk", err);
+    deny(res, 500, "Savdo saqlanmadi");
   }
 });
 
@@ -468,9 +542,7 @@ router.put("/savdo-plan/entries", requireAuth, async (req: AuthRequest, res): Pr
     const branchId = Number(req.body?.branchId);
     const date = String(req.body?.date || "");
     const items = Array.isArray(req.body?.items) ? (req.body.items as unknown[]) : [];
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number(date.slice(8, 10)) > daysInMonth(date.slice(0, 7))) {
-      return deny(res, 400, "Sana noto‘g‘ri");
-    }
+    if (!validDay(date)) return deny(res, 400, "Sana noto‘g‘ri");
     if (!items.length) return deny(res, 400, "Savdo summasi kiritilmadi");
     const parsed: Array<{ employeeId: number; amount: number }> = [];
     for (const raw of items) {
@@ -510,34 +582,11 @@ router.put("/savdo-plan/entries", requireAuth, async (req: AuthRequest, res): Pr
     const known = new Set((await namesFor(parsed.map((p) => p.employeeId))).map((e) => e.id));
     if (parsed.some((p) => !known.has(p.employeeId))) return deny(res, 404, "Xodim topilmadi");
 
-    await ensureSchema();
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      for (const p of parsed) {
-        if (p.amount === 0) {
-          await client.query(
-            `DELETE FROM sales_entries WHERE branch_id = $1 AND employee_id = $2 AND sale_date = $3`,
-            [branchId, p.employeeId, date],
-          );
-          continue;
-        }
-        await client.query(
-          `INSERT INTO sales_entries (branch_id, employee_id, sale_date, amount, entered_by_id, entered_by_name)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (branch_id, employee_id, sale_date) DO UPDATE SET
-             amount = EXCLUDED.amount, entered_by_id = EXCLUDED.entered_by_id,
-             entered_by_name = EXCLUDED.entered_by_name, updated_at = NOW()`,
-          [branchId, p.employeeId, date, p.amount, req.userId ?? null, viewer.fullName || null],
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
+    await writeEntries(
+      branchId,
+      parsed.map((p) => ({ ...p, date })),
+      { userId: req.userId ?? null, name: viewer.fullName || null },
+    );
     res.json({ ok: true, saved: parsed.length });
   } catch (err) {
     console.error("PUT /savdo-plan/entries", err);
@@ -576,6 +625,45 @@ router.get("/savdo-plan/overview", requireAuth, async (req: AuthRequest, res): P
         ...sheet.summary,
       };
     });
+    /** Tarmoq bo‘yicha eng yaxshi xodimlar — daromad har filialning o‘z komissiya foizi bilan */
+    const commissionByBranch = new Map(rows.map((r) => [r.branchId, r.commissionPct]));
+    const branchName = new Map(branches.map((b) => [b.id, b.name]));
+    type Acc = { total: number; income: number; days: Set<string>; today: number; byBranch: Map<number, number> };
+    const acc = new Map<number, Acc>();
+    for (const e of entries) {
+      if (!branchName.has(e.branchId)) continue;
+      const a = acc.get(e.employeeId) ?? { total: 0, income: 0, days: new Set<string>(), today: 0, byBranch: new Map() };
+      a.total += e.amount;
+      a.income += e.amount * (commissionByBranch.get(e.branchId) ?? 0);
+      if (e.amount > 0) a.days.add(e.date);
+      if (e.date === today) a.today += e.amount;
+      a.byBranch.set(e.branchId, (a.byBranch.get(e.branchId) ?? 0) + e.amount);
+      acc.set(e.employeeId, a);
+    }
+    const people = await namesFor([...acc.keys()]);
+    const nameOf = new Map(people.map((p) => [p.id, p]));
+    const topEmployees = [...acc.entries()]
+      .filter(([, a]) => a.total > 0)
+      .sort((x, y) => y[1].total - x[1].total)
+      .slice(0, 20)
+      .map(([id, a], i) => {
+        const main = [...a.byBranch.entries()].sort((x, y) => y[1] - x[1])[0]![0];
+        return {
+          rank: i + 1,
+          employeeId: id,
+          fullName: nameOf.get(id)?.fullName || `#${id}`,
+          orgRole: nameOf.get(id)?.orgRole ?? null,
+          branchId: main,
+          branchName: branchName.get(main) || "",
+          branches: a.byBranch.size,
+          total: Math.round(a.total * 100) / 100,
+          days: a.days.size,
+          avgPerDay: a.days.size ? Math.round((a.total / a.days.size) * 100) / 100 : 0,
+          today: Math.round(a.today * 100) / 100,
+          income: Math.round(a.income * 100) / 100,
+        };
+      });
+
     const totalPlan = rows.reduce((s, r) => s + r.plan, 0);
     const totalDone = rows.reduce((s, r) => s + r.done, 0);
     const totalToday = rows.reduce((s, r) => s + r.todayTotal, 0);
@@ -587,6 +675,7 @@ router.get("/savdo-plan/overview", requireAuth, async (req: AuthRequest, res): P
       daysInMonth: daysInMonth(month),
       tiers,
       rows,
+      topEmployees,
       totals: {
         plan: totalPlan,
         done: totalDone,

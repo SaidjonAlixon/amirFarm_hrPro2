@@ -66,6 +66,13 @@ describe("savdo plan — Excel shabloni bilan bir xil", () => {
     near(b!.total, 225_415_437.34);
     near(b!.income, 1_577_908.06);
     near(x!.income, 21_700);
+    assert.equal(g!.rank, 1);
+    assert.equal(b!.rank, 2);
+    assert.equal(x!.rank, 3);
+    assert.equal(g!.bestDay?.date, "2026-09-17");
+    assert.equal(s.summary.bestDay?.date, "2026-09-17");
+    assert.equal(s.summary.timePct, 1);
+    near(s.summary.paceGap, 476_051_720.6 - 560_000_000);
     assert.equal(s.summary.status, "past");
     assert.equal(s.summary.neededPerDay, null);
   });

@@ -22,6 +22,11 @@ export type SalesSummary = {
   commissionPct: number;
   projectedCommissionPct: number;
   nextTier: { from: number; pct: number; needAmount: number } | null;
+  timePct: number;
+  paceGap: number;
+  daysWithData: number;
+  daysAbovePlan: number;
+  bestDay: { date: string; total: number } | null;
   status: "past" | "current" | "future";
 };
 
@@ -48,6 +53,9 @@ export type SalesEmployee = {
   total: number;
   sharePct: number;
   daysWorked: number;
+  avgPerDay: number;
+  bestDay: { date: string; amount: number } | null;
+  rank: number;
   todayAmount: number;
   commissionPct: number;
   income: number;
@@ -85,6 +93,7 @@ export type SavdoSheet = {
   planUpdatedBy: string | null;
   planUpdatedAt: string | null;
   shifts: Record<number, StaffShift>;
+  sellersCount: number;
   summary: SalesSummary;
   days: SalesDay[];
   employees: SalesEmployee[];
@@ -99,12 +108,28 @@ export type SavdoOverviewRow = SalesSummary & {
   lastEntryDate: string | null;
 };
 
+export type SavdoTopEmployee = {
+  rank: number;
+  employeeId: number;
+  fullName: string;
+  orgRole: string | null;
+  branchId: number;
+  branchName: string;
+  branches: number;
+  total: number;
+  days: number;
+  avgPerDay: number;
+  today: number;
+  income: number;
+};
+
 export type SavdoOverview = {
   month: string;
   today: string;
   daysInMonth: number;
   tiers: CommissionTier[];
   rows: SavdoOverviewRow[];
+  topEmployees: SavdoTopEmployee[];
   totals: {
     plan: number;
     done: number;
@@ -146,6 +171,13 @@ export function fetchSavdoOverview(month: string) {
 
 export function saveSavdoEntries(body: { branchId: number; date: string; items: Array<{ employeeId: number; amount: number }> }) {
   return apiJson<{ ok: boolean; saved: number }>("/savdo-plan/entries", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export function saveSavdoEntriesBulk(body: {
+  branchId: number;
+  items: Array<{ employeeId: number; date: string; amount: number }>;
+}) {
+  return apiJson<{ ok: boolean; saved: number }>("/savdo-plan/entries/bulk", { method: "PUT", body: JSON.stringify(body) });
 }
 
 export function saveSavdoPlan(body: { branchId: number; month: string; amount: number }) {
