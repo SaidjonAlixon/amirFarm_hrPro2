@@ -576,6 +576,13 @@ function DailyChart({ sheet }: { sheet: SavdoSheet }) {
   );
 }
 
+/** «Gulsharafat Koshjanova» → «Gulsharafat K.» */
+function shortName(full: string): string {
+  const parts = full.trim().split(/\s+/);
+  if (parts.length < 2) return full;
+  return `${parts[0]} ${parts[1]!.charAt(0).toUpperCase()}.`;
+}
+
 type Draft = Record<string, number | null>;
 const dkey = (date: string, id: number) => `${date}|${id}`;
 
@@ -624,7 +631,7 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
   });
 
   const visibleDays = editing ? sheet.days.filter((d) => d.date <= sheet.today) : sheet.days.filter((d) => !d.isFuture || d.hasData);
-  const cell = "whitespace-nowrap px-3 py-2 text-right tabular-nums";
+  const cell = "whitespace-nowrap px-3 py-2 text-center tabular-nums";
 
   return (
     <Panel
@@ -673,21 +680,21 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
       ) : null}
       <div className="max-h-[620px] overflow-auto">
         <table className="w-full min-w-[960px] text-[13px]">
-          <thead className="sticky top-0 z-10 bg-muted/90 text-[10px] uppercase tracking-wide text-muted-foreground backdrop-blur">
-            <tr>
-              <th className="sticky left-0 bg-muted/90 px-3 py-2 text-left">Kun</th>
+          <thead className="sticky top-0 z-10 whitespace-nowrap bg-muted/90 text-[11px] font-semibold text-muted-foreground backdrop-blur">
+            <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-center">
+              <th className="sticky left-0 bg-muted/90 !text-left">Kun</th>
               {cols.map((e) => (
-                <th key={e.id} className="px-3 py-2 text-right normal-case">
-                  {e.id === self ? "Mening savdom" : e.fullName}
+                <th key={e.id} title={e.fullName} className="text-foreground">
+                  {e.id === self ? "Mening savdom" : shortName(e.fullName)}
                 </th>
               ))}
-              <th className="px-3 py-2 text-right">Kunlik jami</th>
-              <th className="px-3 py-2 text-right">Kunlik plan</th>
-              <th className="px-3 py-2 text-right">Farq</th>
-              <th className="px-3 py-2 text-right">Kun %</th>
-              <th className="px-3 py-2 text-right">Kumulyativ</th>
-              <th className="px-3 py-2 text-right">Oylik %</th>
-              <th className="px-3 py-2 text-right">Komissiya</th>
+              <th>Kunlik jami</th>
+              <th>Kunlik plan</th>
+              <th>Farq</th>
+              <th>Kun %</th>
+              <th>Kumulyativ</th>
+              <th>Oylik %</th>
+              <th>Komissiya</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">
@@ -712,7 +719,7 @@ function DailyTable({ sheet, month }: { sheet: SavdoSheet; month: string }) {
                           onChange={(n) => setDraft((p) => ({ ...p, [dkey(d.date, e.id)]: n }))}
                           placeholder="—"
                           className={cn(
-                            "h-8 min-w-[110px] px-2 text-xs",
+                            "h-8 min-w-[110px] px-2 text-center text-xs",
                             dkey(d.date, e.id) in draft &&
                               (draft[dkey(d.date, e.id)] ?? 0) !== (d.byEmployee[e.id] ?? 0) &&
                               "border-primary bg-primary/5",
