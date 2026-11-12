@@ -8,7 +8,7 @@ import QRCode from "qrcode";
 import { jsPDF } from "jspdf";
 import { downloadDataUrl } from "./qr-render";
 
-export const LOKATSIYA_BOT_USERNAME = "Amir_pharmacy_filyallarbot";
+export const LOKATSIYA_BOT_USERNAME = "Amir_pharmacy_filiallarbot";
 export const LOKATSIYA_BOT_URL = `https://t.me/${LOKATSIYA_BOT_USERNAME}`;
 export const LOKATSIYA_BOT_HANDLE = `@${LOKATSIYA_BOT_USERNAME}`;
 
