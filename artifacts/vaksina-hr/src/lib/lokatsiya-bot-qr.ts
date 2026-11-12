@@ -1,6 +1,7 @@
 /**
  * Amir Farm lokatsiya bot — zamonaviy brendlangan QR poster (PNG / PDF).
  * Oddiy qora-oq emas: gradient nuqtalar, yumaloq ko‘zlar, logo markazda.
+ * To‘liq poster: header + QR + @username + skaner matni.
  */
 
 import QRCode from "qrcode";
@@ -74,77 +75,83 @@ function drawFinder(
 }
 
 /**
- * To‘liq poster canvas: header + stylized QR + footer.
- * `outerSize` — kvadrat poster tomoni (px).
+ * To‘liq poster: header + stylized QR + @username + skaner matni.
+ * Portrait 4:5 — pastki matn hech qachon kesilmaydi.
  */
 export async function renderLokatsiyaBotQrPoster(
-  outerSize = 1200,
+  width = 1080,
   logoUrl = `${import.meta.env.BASE_URL}amirfarm-icon.png`,
 ): Promise<HTMLCanvasElement> {
-  const dpr = 1;
-  const W = Math.round(outerSize * dpr);
+  const W = Math.round(width);
+  const H = Math.round(W * 1.28);
   const canvas = document.createElement("canvas");
   canvas.width = W;
-  canvas.height = W;
+  canvas.height = H;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas ishlamaydi");
 
-  // Fon — chuqur navy + yorqin accent glow
-  const bg = ctx.createLinearGradient(0, 0, W, W);
+  const bg = ctx.createLinearGradient(0, 0, W, H);
   bg.addColorStop(0, "#041022");
-  bg.addColorStop(0.45, COLOR_NAVY);
+  bg.addColorStop(0.5, COLOR_NAVY);
   bg.addColorStop(1, "#0b3a6e");
   ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, W);
+  ctx.fillRect(0, 0, W, H);
 
-  // Soft orbs
-  const orb1 = ctx.createRadialGradient(W * 0.15, W * 0.12, 0, W * 0.15, W * 0.12, W * 0.35);
-  orb1.addColorStop(0, "rgba(56,189,248,0.28)");
+  const orb1 = ctx.createRadialGradient(W * 0.18, H * 0.1, 0, W * 0.18, H * 0.1, W * 0.4);
+  orb1.addColorStop(0, "rgba(56,189,248,0.3)");
   orb1.addColorStop(1, "rgba(56,189,248,0)");
   ctx.fillStyle = orb1;
-  ctx.fillRect(0, 0, W, W);
+  ctx.fillRect(0, 0, W, H);
 
-  const orb2 = ctx.createRadialGradient(W * 0.9, W * 0.85, 0, W * 0.9, W * 0.85, W * 0.4);
-  orb2.addColorStop(0, "rgba(11,95,255,0.35)");
+  const orb2 = ctx.createRadialGradient(W * 0.88, H * 0.88, 0, W * 0.88, H * 0.88, W * 0.45);
+  orb2.addColorStop(0, "rgba(11,95,255,0.38)");
   orb2.addColorStop(1, "rgba(11,95,255,0)");
   ctx.fillStyle = orb2;
-  ctx.fillRect(0, 0, W, W);
+  ctx.fillRect(0, 0, W, H);
+
+  const sidePad = W * 0.07;
+  let y = H * 0.055;
 
   // Header
-  const pad = W * 0.06;
   ctx.fillStyle = "#ffffff";
-  ctx.font = `700 ${Math.round(W * 0.048)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
+  ctx.font = `800 ${Math.round(W * 0.052)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  ctx.fillText("AMIR FARM", W / 2, pad * 0.85);
+  ctx.fillText("AMIR FARM", W / 2, y);
+  y += W * 0.06;
 
-  ctx.fillStyle = "rgba(255,255,255,0.78)";
-  ctx.font = `600 ${Math.round(W * 0.028)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
-  ctx.fillText("LOKATSIYA BOT", W / 2, pad * 0.85 + W * 0.055);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.font = `700 ${Math.round(W * 0.03)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
+  ctx.fillText("LOKATSIYA BOT", W / 2, y);
+  y += W * 0.042;
 
   ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.font = `500 ${Math.round(W * 0.02)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
-  ctx.fillText("Filial · raqam · ish vaqti · joylashuv", W / 2, pad * 0.85 + W * 0.095);
+  ctx.font = `500 ${Math.round(W * 0.022)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
+  ctx.fillText("Filial · raqam · ish vaqti · joylashuv", W / 2, y);
+  y += W * 0.055;
 
-  // QR white card
-  const cardTop = pad * 0.85 + W * 0.145;
-  const cardSize = W - pad * 2;
-  const cardH = cardSize * 0.92;
-  roundRect(ctx, pad, cardTop, cardSize, cardH, W * 0.045);
+  // Footer reserve — @username + hint + line
+  const footerReserve = W * 0.2;
+  const cardBottomLimit = H - footerReserve;
+  const cardMax = Math.min(W - sidePad * 2, cardBottomLimit - y);
+  const cardSize = Math.floor(cardMax);
+  const cardX = (W - cardSize) / 2;
+  const cardY = y;
+
+  roundRect(ctx, cardX, cardY, cardSize, cardSize, W * 0.045);
   ctx.fillStyle = "#ffffff";
-  ctx.shadowColor = "rgba(0,0,0,0.28)";
-  ctx.shadowBlur = W * 0.04;
-  ctx.shadowOffsetY = W * 0.012;
+  ctx.shadowColor = "rgba(0,0,0,0.3)";
+  ctx.shadowBlur = W * 0.035;
+  ctx.shadowOffsetY = W * 0.01;
   ctx.fill();
   ctx.shadowColor = "transparent";
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
 
-  // Inner soft tint
-  const innerPad = cardSize * 0.07;
+  const innerPad = cardSize * 0.08;
   const qrArea = cardSize - innerPad * 2;
-  const qrX = pad + innerPad;
-  const qrY = cardTop + innerPad * 0.85;
+  const qrX = cardX + innerPad;
+  const qrY = cardY + innerPad;
 
   const qrData = QRCode.create(LOKATSIYA_BOT_URL, { errorCorrectionLevel: "H" });
   const modules = qrData.modules;
@@ -156,25 +163,22 @@ export async function renderLokatsiyaBotQrPoster(
   moduleGrad.addColorStop(0.55, "#0a4fd6");
   moduleGrad.addColorStop(1, COLOR_INK);
 
-  // Modules (skip finders — drawn separately)
   for (let r = 0; r < n; r++) {
     for (let c = 0; c < n; c++) {
       if (!modules.get(r, c) || isFinderCell(r, c, n)) continue;
       const x = qrX + c * cell;
-      const y = qrY + r * cell;
+      const yy = qrY + r * cell;
       const gap = cell * 0.18;
-      roundRect(ctx, x + gap / 2, y + gap / 2, cell - gap, cell - gap, cell * 0.28);
+      roundRect(ctx, x + gap / 2, yy + gap / 2, cell - gap, cell - gap, cell * 0.28);
       ctx.fillStyle = moduleGrad;
       ctx.fill();
     }
   }
 
-  // Finder eyes
   drawFinder(ctx, qrX, qrY, cell, moduleGrad);
   drawFinder(ctx, qrX + (n - 7) * cell, qrY, cell, moduleGrad);
   drawFinder(ctx, qrX, qrY + (n - 7) * cell, cell, moduleGrad);
 
-  // Center logo badge
   const logo = await loadImage(logoUrl);
   const badge = qrArea * 0.22;
   const bx = qrX + (qrArea - badge) / 2;
@@ -207,32 +211,37 @@ export async function renderLokatsiyaBotQrPoster(
     ctx.fillText("AF", bx + badge / 2, by + badge / 2);
   }
 
-  // Footer under card
-  const footY = cardTop + cardH + W * 0.035;
+  // Footer — always inside canvas
+  let footY = cardY + cardSize + W * 0.04;
   ctx.fillStyle = "#ffffff";
-  ctx.font = `700 ${Math.round(W * 0.032)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
+  ctx.font = `800 ${Math.round(W * 0.036)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   ctx.fillText(LOKATSIYA_BOT_HANDLE, W / 2, footY);
+  footY += W * 0.048;
 
-  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.fillStyle = "rgba(255,255,255,0.78)";
+  ctx.font = `600 ${Math.round(W * 0.024)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
+  ctx.fillText("Skaner qiling — Telegram bot ochiladi", W / 2, footY);
+  footY += W * 0.04;
+
+  ctx.fillStyle = "rgba(255,255,255,0.45)";
   ctx.font = `500 ${Math.round(W * 0.02)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
-  ctx.fillText("Skaner qiling — Telegram bot ochiladi", W / 2, footY + W * 0.042);
+  ctx.fillText(LOKATSIYA_BOT_URL.replace(/^https?:\/\//, ""), W / 2, footY);
+  footY += W * 0.038;
 
-  // Accent line
-  const lineW = W * 0.18;
-  const lineY = footY + W * 0.085;
+  const lineW = W * 0.22;
   const lineGrad = ctx.createLinearGradient(W / 2 - lineW / 2, 0, W / 2 + lineW / 2, 0);
   lineGrad.addColorStop(0, "rgba(56,189,248,0)");
   lineGrad.addColorStop(0.5, COLOR_SKY);
   lineGrad.addColorStop(1, "rgba(56,189,248,0)");
   ctx.fillStyle = lineGrad;
-  ctx.fillRect(W / 2 - lineW / 2, lineY, lineW, Math.max(2, W * 0.003));
+  ctx.fillRect(W / 2 - lineW / 2, footY, lineW, Math.max(2, W * 0.004));
 
   return canvas;
 }
 
-export async function lokatsiyaBotQrPngDataUrl(size = 1200): Promise<string> {
+export async function lokatsiyaBotQrPngDataUrl(size = 1080): Promise<string> {
   const canvas = await renderLokatsiyaBotQrPoster(size);
   return canvas.toDataURL("image/png");
 }
@@ -247,12 +256,13 @@ export async function downloadLokatsiyaBotQrPdf(filename = "amir-farm-lokatsiya-
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageW = 210;
   const pageH = 297;
-  const margin = 18;
-  const side = pageW - margin * 2;
-  const y = (pageH - side) / 2;
+  const marginX = 16;
+  const imgW = pageW - marginX * 2;
+  const imgH = imgW * 1.28;
+  const y = Math.max(14, (pageH - imgH) / 2);
   doc.setFillColor(4, 16, 34);
   doc.rect(0, 0, pageW, pageH, "F");
-  doc.addImage(png, "PNG", margin, y, side, side, undefined, "FAST");
+  doc.addImage(png, "PNG", marginX, y, imgW, imgH, undefined, "FAST");
   const blob = doc.output("blob");
   const objectUrl = URL.createObjectURL(blob);
   downloadDataUrl(objectUrl, filename);

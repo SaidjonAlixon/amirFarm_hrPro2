@@ -114,17 +114,17 @@ export default function LokatsiyaBotQrCard({ className, compact }: Props) {
           </div>
         </div>
 
-        <div className="mx-auto w-full max-w-[260px]">
+        <div className="mx-auto w-full max-w-[240px]">
           <div className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-[#041022] p-2 shadow-md ring-1 ring-[#0b5fff]/20">
             {preview ? (
               <img
                 src={preview}
                 alt="Amir Farm lokatsiya bot QR"
-                className="aspect-square w-full rounded-xl object-cover"
+                className="aspect-[100/128] w-full rounded-xl object-cover"
                 draggable={false}
               />
             ) : (
-              <div className="flex aspect-square w-full items-center justify-center rounded-xl bg-[#071a33] text-sky-200/80">
+              <div className="flex aspect-[100/128] w-full items-center justify-center rounded-xl bg-[#071a33] text-sky-200/80">
                 <div className="flex flex-col items-center gap-2 text-sm">
                   <QrCode className="h-8 w-8 animate-pulse" />
                   <span>QR chizilmoqda…</span>
