@@ -8,6 +8,7 @@ import { userRoleLabel } from "../../lib/roles";
 import { cn } from "../../lib/utils";
 import { fetchBoglanishOverview, type BoglanishOverviewBranch } from "../../lib/boglanish-api";
 import { exportBoglanishPdf, fmtBoglanishWhen, formatUzPhone } from "../../lib/boglanish-pdf";
+import LokatsiyaBotQrCard from "./LokatsiyaBotQrCard";
 
 type Tab = "missing" | "filled" | "all";
 const NO_COORD = -1;
@@ -152,6 +153,8 @@ export default function BoglanishAdminOverview() {
         </div>
         <div className="pointer-events-none absolute -right-8 -top-10 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
       </div>
+
+      <LokatsiyaBotQrCard compact />
 
       <div className="grid grid-cols-3 gap-3">
         <Stat icon={Store} label="Jami filial" value={total} tone="slate" onClick={() => setTab("all")} active={tab === "all"} />

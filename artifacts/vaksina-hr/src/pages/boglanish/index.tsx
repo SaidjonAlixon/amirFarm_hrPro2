@@ -34,6 +34,7 @@ import {
   type BoglanishBranch,
 } from "../../lib/boglanish-api";
 import BoglanishAdminOverview from "../../components/boglanish/BoglanishAdminOverview";
+import LokatsiyaBotQrCard from "../../components/boglanish/LokatsiyaBotQrCard";
 
 type Draft = {
   primaryPhone: string;
@@ -197,6 +198,8 @@ function BoglanishEditor() {
         </div>
         <div className="pointer-events-none absolute -right-8 -top-10 h-40 w-40 rounded-full bg-white/10 blur-2xl" />
       </div>
+
+      <LokatsiyaBotQrCard />
 
       <div className={cn("grid gap-4", !isMudir && data.branches.length > 1 && "lg:grid-cols-[240px_1fr]")}>
         {!isMudir && data.branches.length > 0 ? (
