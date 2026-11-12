@@ -116,12 +116,6 @@ function formatPhone(phone: string | null | undefined): string {
   return `<code>${esc(phone)}</code>`;
 }
 
-function openLabel(status: FilialBranchCard["openStatus"]): string {
-  if (status === "open") return "🟢 <b>Hozir ochiq</b>";
-  if (status === "closed") return "🔴 <b>Hozir yopiq</b>";
-  return "⚪ <b>Ish vaqti belgilanmagan</b>";
-}
-
 function hoursLabel(b: FilialBranchCard): string {
   if (b.contactFromHm && b.contactToHm) {
     return `${esc(b.contactFromHm)} — ${esc(b.contactToHm)}`;
@@ -129,14 +123,22 @@ function hoursLabel(b: FilialBranchCard): string {
   return "⚠️ <i>belgilanmagan</i>";
 }
 
+function telegramLabel(nick: string | null | undefined): string | null {
+  if (!nick) return null;
+  const raw = nick.trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw) || raw.startsWith("t.me/") || raw.startsWith("@")) {
+    return esc(raw);
+  }
+  return esc(`@${raw.replace(/^@+/, "")}`);
+}
+
+/** Mijozlar uchun: nom, filial raqami, TG (bo‘lsa), ish vaqti; lokatsiya alohida yuboriladi */
 export function formatBranchCard(
   b: FilialBranchCard,
   opts?: { distanceMeters?: number },
 ): string {
-  const lines: string[] = [
-    `🏢 <b>${esc(b.name)}</b>`,
-    "",
-  ];
+  const lines: string[] = [`🏢 <b>${esc(b.name)}</b>`, ""];
 
   if (opts?.distanceMeters != null && Number.isFinite(opts.distanceMeters)) {
     lines.push(
@@ -146,43 +148,24 @@ export function formatBranchCard(
   }
 
   lines.push(
-    `🗺 <b>Tuman / hudud:</b> ${esc(b.district)}`,
-    "",
-    `👤 <b>Koordinator:</b> ${b.coordinatorName ? esc(b.coordinatorName) : "⚠️ <i>biriktirilmagan</i>"}`,
-    `📞 <b>Koordinator raqami:</b> ${formatPhone(b.coordinatorPhone)}`,
-    "",
-    `🧑‍💼 <b>Zavedushiy (mudir):</b> ${esc(b.mudirName)}`,
-    `📱 <b>Mudir shaxsiy:</b> ${formatPhone(b.mudirPhone)}`,
-    "",
-    `☎️ <b>Filial raqami (Bog‘lanish):</b> ${
-      b.hasPrimaryPhone
-        ? formatPhone(b.primaryPhone)
-        : "⚠️ <i>kiritilmagan — mudir Bog‘lanish bo‘limida yozishi kerak</i>"
+    `☎️ <b>Filial raqami:</b> ${
+      b.hasPrimaryPhone ? formatPhone(b.primaryPhone) : "⚠️ <i>kiritilmagan</i>"
     }`,
   );
 
-  if (b.extraPhones.length) {
-    lines.push(
-      `➕ <b>Qo‘shimcha:</b> ${b.extraPhones.map((p) => `<code>${esc(p)}</code>`).join(", ")}`,
-    );
-  }
-  if (b.telegramNick) {
-    lines.push(`✈️ <b>Telegram:</b> ${esc(b.telegramNick)}`);
+  const tg = telegramLabel(b.telegramNick);
+  if (tg) {
+    lines.push(`✈️ <b>Telegram:</b> ${tg}`);
   }
 
-  lines.push("", `🕐 <b>Bog‘lanish vaqti:</b> ${hoursLabel(b)}`, openLabel(b.openStatus), "");
+  lines.push(`🕐 <b>Ish vaqti:</b> ${hoursLabel(b)}`, "");
 
   if (b.hasGps && b.lat != null && b.lng != null) {
-    lines.push(
-      "📍 <b>Lokatsiya:</b> tizimdagi aniq nuqta pastda yuboriladi — ochib navigatsiya qilishingiz mumkin.",
-    );
+    lines.push("📍 Lokatsiya pastda yuboriladi.");
   } else {
-    lines.push(
-      "📍 <b>Lokatsiya:</b> ⚠️ <i>tizimda yo‘q — GPS qo‘shish kerak</i> (Aptekalar tarmog‘i / filial GPS).",
-    );
+    lines.push("📍 <i>Lokatsiya hozircha yo‘q</i>");
   }
 
-  lines.push("", "<i>Mijoz va xodimlar uchun: filialga qo‘ng‘iroq qilish va yo‘l topish</i>");
   return lines.join("\n");
 }
 
@@ -211,9 +194,10 @@ function listText(branches: FilialBranchCard[], page: number, firstName: string)
   return [
     `👋 <b>Xush kelibsiz, ${esc(firstName)}!</b>`,
     "",
-    "🏢 <b>Amir Farm lokatsiya</b> — filiallar, bog‘lanish va lokatsiya.",
+    "🏢 <b>Amir Farm lokatsiya</b>",
+    "Filial nomi, raqam, ish vaqti va joylashuv.",
     "",
-    "Filialingizni tanlang:",
+    "Filialni tanlang:",
     `<i>Sahifa ${p + 1}/${totalPages} · jami ${branches.length} ta filial</i>`,
   ].join("\n");
 }
@@ -807,11 +791,11 @@ async function handleUserLocation(
   ranked.forEach((r, i) => {
     lines.push(
       `${medals[i]} <b>${esc(r.branch.name)}</b>`,
-      `   📏 ${esc(formatDistanceExact(r.meters))} · ${r.branch.openStatus === "open" ? "🟢 ochiq" : r.branch.openStatus === "closed" ? "🔴 yopiq" : "⚪ vaqt yo‘q"}`,
+      `   📏 ${esc(formatDistanceExact(r.meters))}`,
       "",
     );
   });
-  lines.push("Filialni tanlang — to‘liq ma’lumot, masofa va lokatsiya chiqadi:");
+  lines.push("Filialni tanlang — raqam, ish vaqti va lokatsiya chiqadi:");
 
   await filialSendMessage(chatId, lines.join("\n"), {
     reply_markup: {
