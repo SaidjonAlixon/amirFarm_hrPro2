@@ -37,13 +37,13 @@ async function applyBotProfile() {
     ["setMyName", () => filialSetMyName("Amir Farm lokatsiya")],
     [
       "setMyShortDescription",
-      () => filialSetMyShortDescription("Filial lokatsiyasi, telefon va bog‘lanish vaqti"),
+      () => filialSetMyShortDescription("Filial nomi, raqam, ish vaqti va lokatsiya"),
     ],
     [
       "setMyDescription",
       () =>
         filialSetMyDescription(
-          "Amir Farm lokatsiya — filial, tuman kesimi, bog‘lanish. Rekruterlar uchun xodim ehtiyoji monitoring.",
+          "Amir Farm lokatsiya — dorixona filiali: nom, telefon, ish vaqti va joylashuv.",
         ),
     ],
     [
