@@ -383,12 +383,16 @@ export async function removePharmacyBranch(
   | { ok: true; branchName: string; wiped: string[]; dismissed: string[] }
   | { ok: false; status: number; error: string }
 > {
+  const resolved = await resolveBranchManager(managerEmployeeId);
+  if (!resolved) {
+    return { ok: false, status: 404, error: "Filial topilmadi" };
+  }
   const [manager] = await db
     .select()
     .from(employeesTable)
     .where(eq(employeesTable.id, managerEmployeeId))
     .limit(1);
-  if (!manager || manager.orgRole !== "manager") {
+  if (!manager) {
     return { ok: false, status: 404, error: "Filial topilmadi" };
   }
 
@@ -451,6 +455,67 @@ export async function removePharmacyBranch(
   };
 }
 
+/** Ro‘yxatda mudir sifatida ko‘rinadi (org_role yoki user.role=mudir), lekin org_role bo‘sh bo‘lishi mumkin. */
+async function resolveBranchManager(managerEmployeeId: number) {
+  const [manager] = await db
+    .select({
+      id: employeesTable.id,
+      orgRole: employeesTable.orgRole,
+      fullName: employeesTable.fullName,
+      location: employeesTable.location,
+      reportsToId: employeesTable.reportsToId,
+      employmentStatus: employeesTable.employmentStatus,
+      userId: employeesTable.userId,
+      position: employeesTable.position,
+    })
+    .from(employeesTable)
+    .where(eq(employeesTable.id, managerEmployeeId))
+    .limit(1);
+  if (!manager) return null;
+
+  if (manager.orgRole === "manager") return manager;
+
+  let userRole: string | null = null;
+  if (manager.userId != null) {
+    const [u] = await db
+      .select({ role: usersTable.role })
+      .from(usersTable)
+      .where(eq(usersTable.id, manager.userId))
+      .limit(1);
+    userRole = u?.role ?? null;
+  }
+  const pos = (manager.position || "").toLowerCase();
+  const looksLikeMudir =
+    userRole === "mudir" || /filial\s*mudir/.test(pos) || pos === "mudir";
+  if (!looksLikeMudir) return null;
+  return manager;
+}
+
+async function resolveCoordinator(coordinatorEmployeeId: number) {
+  const [next] = await db
+    .select({
+      id: employeesTable.id,
+      orgRole: employeesTable.orgRole,
+      fullName: employeesTable.fullName,
+      employmentStatus: employeesTable.employmentStatus,
+      userId: employeesTable.userId,
+    })
+    .from(employeesTable)
+    .where(eq(employeesTable.id, coordinatorEmployeeId))
+    .limit(1);
+  if (!next) return null;
+  if (next.orgRole === "coordinator") return next;
+  if (next.userId != null) {
+    const [u] = await db
+      .select({ role: usersTable.role })
+      .from(usersTable)
+      .where(eq(usersTable.id, next.userId))
+      .limit(1);
+    if (u?.role === "koordinator") return next;
+  }
+  return null;
+}
+
 /**
  * Filialni boshqa koordinatorga o‘tkazish.
  * Faqat mudir qatoridagi reportsToId o‘zgaradi. Nom, GPS, xodimlar, smena, login va davomat qoladi.
@@ -478,36 +543,16 @@ export async function transferPharmacyBranch(
     return { ok: false, status: 400, error: "Filialni o‘ziga o‘tkazib bo‘lmaydi" };
   }
 
-  const [manager] = await db
-    .select({
-      id: employeesTable.id,
-      orgRole: employeesTable.orgRole,
-      fullName: employeesTable.fullName,
-      location: employeesTable.location,
-      reportsToId: employeesTable.reportsToId,
-      employmentStatus: employeesTable.employmentStatus,
-    })
-    .from(employeesTable)
-    .where(eq(employeesTable.id, managerEmployeeId))
-    .limit(1);
-  if (!manager || manager.orgRole !== "manager") {
+  const manager = await resolveBranchManager(managerEmployeeId);
+  if (!manager) {
     return { ok: false, status: 404, error: "Filial topilmadi" };
   }
   if (manager.employmentStatus === "dismissed") {
     return { ok: false, status: 400, error: "Bo‘shatilgan filialni o‘tkazib bo‘lmaydi" };
   }
 
-  const [next] = await db
-    .select({
-      id: employeesTable.id,
-      orgRole: employeesTable.orgRole,
-      fullName: employeesTable.fullName,
-      employmentStatus: employeesTable.employmentStatus,
-    })
-    .from(employeesTable)
-    .where(eq(employeesTable.id, coordinatorEmployeeId))
-    .limit(1);
-  if (!next || next.orgRole !== "coordinator") {
+  const next = await resolveCoordinator(coordinatorEmployeeId);
+  if (!next) {
     return { ok: false, status: 404, error: "Koordinator topilmadi" };
   }
   if (next.employmentStatus === "dismissed" || next.employmentStatus === "closed") {
@@ -527,10 +572,23 @@ export async function transferPharmacyBranch(
     if (prev?.fullName?.trim()) fromCoordinator = prev.fullName.trim();
   }
 
+  // org_role bo‘sh mudirlarni ham filial sifatida biriktiramiz (UI allaqachon mudir deb ko‘rsatadi)
   await db
     .update(employeesTable)
-    .set({ reportsToId: next.id, updatedAt: new Date() })
+    .set({
+      reportsToId: next.id,
+      orgRole: "manager",
+      position: manager.position?.trim() ? manager.position : "Filial mudiri",
+      updatedAt: new Date(),
+    })
     .where(eq(employeesTable.id, manager.id));
+
+  if (next.orgRole !== "coordinator") {
+    await db
+      .update(employeesTable)
+      .set({ orgRole: "coordinator", updatedAt: new Date() })
+      .where(eq(employeesTable.id, next.id));
+  }
 
   invalidateFilialBranchCache();
   const branchName = displayBranchName(manager.location) || manager.fullName;
