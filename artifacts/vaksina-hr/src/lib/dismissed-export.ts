@@ -137,7 +137,7 @@ export async function exportDismissedExcel(rows: DismissedStaff[], search?: stri
  <Worksheet ss:Name="Boshhatilganlar">
   <Table>
    ${widths.map((w) => `<Column ss:AutoFitWidth="0" ss:Width="${w}"/>`).join("")}
-   <Row ss:Height="24"><Cell ss:MergeAcross="11" ss:StyleID="title"><Data ss:Type="String">Bo‘shatilganlar — AMIR FARM HR</Data></Cell></Row>
+   <Row ss:Height="24"><Cell ss:MergeAcross="11" ss:StyleID="title"><Data ss:Type="String">Bo‘shatilganlar — AMIR PHARMACY HR</Data></Cell></Row>
    <Row ss:Height="18"><Cell ss:MergeAcross="11" ss:StyleID="sub"><Data ss:Type="String">${escXml(`${stampNow()} · ${rows.length} ta${search?.trim() ? ` · qidiruv: ${search.trim()}` : ""} · login va parol bekor`)}</Data></Cell></Row>
    <Row ss:Height="22">${headers.map((h) => `<Cell ss:StyleID="head"><Data ss:Type="String">${escXml(h)}</Data></Cell>`).join("")}</Row>
    ${dataRows}
@@ -204,7 +204,7 @@ export async function exportDismissedPdf(rows: DismissedStaff[], search?: string
     ctx.fillText("Bo‘shatilganlar", margin * scale, 7.2 * scale);
     ctx.font = `${Math.round(2.6 * scale)}px ${FONT}`;
     ctx.fillStyle = "#dbeafe";
-    ctx.fillText("AMIR FARM HR", margin * scale, 12.2 * scale);
+    ctx.fillText("AMIR PHARMACY HR", margin * scale, 12.2 * scale);
     ctx.textAlign = "right";
     ctx.fillStyle = "#ffffff";
     ctx.fillText(`${stampNow()}  ·  ${page + 1}-list`, (pageW - margin) * scale, 8 * scale);
@@ -286,7 +286,7 @@ export async function exportDismissedPdf(rows: DismissedStaff[], search?: string
 
     ctx.fillStyle = "#94a3b8";
     ctx.font = `${Math.round(2.3 * scale)}px ${FONT}`;
-    ctx.fillText("Maxfiy · faqat admin · AMIR FARM HR", margin * scale, (pageH - 3.5) * scale);
+    ctx.fillText("Maxfiy · faqat admin · AMIR PHARMACY HR", margin * scale, (pageH - 3.5) * scale);
 
     doc.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pageW, pageH);
     page += 1;

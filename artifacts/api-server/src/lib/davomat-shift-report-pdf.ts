@@ -130,7 +130,7 @@ function newPage(d: Draw, continued: boolean) {
   if (continued) {
     d.page.drawRectangle({ x: 0, y: PAGE_H - 22, width: PAGE_W, height: 22, color: NAVY });
     d.page.drawText(
-      fit(`AMIR FARM HR  ·  Davomat hisobot  ·  ${d.dateLabel}  ·  ${d.reportHm}`, d.bold, 8, PAGE_W - M * 2),
+      fit(`AMIR PHARMACY HR  ·  Davomat hisobot  ·  ${d.dateLabel}  ·  ${d.reportHm}`, d.bold, 8, PAGE_W - M * 2),
       { x: M, y: PAGE_H - 15, size: 8, font: d.bold, color: PAPER },
     );
     d.y = PAGE_H - 36;
@@ -140,7 +140,7 @@ function newPage(d: Draw, continued: boolean) {
 
 function drawFooter(d: Draw) {
   d.page.drawText(
-    `AMIR FARM HR  ·  ${d.pageNo}-sahifa  ·  1 Kelmaganlar  ·  2 Kechikkanlar  ·  3 Kelganlar`,
+    `AMIR PHARMACY HR  ·  ${d.pageNo}-sahifa  ·  1 Kelmaganlar  ·  2 Kechikkanlar  ·  3 Kelganlar`,
     { x: M, y: 16, size: 7.5, font: d.font, color: MUTED },
   );
 }
@@ -323,7 +323,7 @@ export async function renderDavomatShiftPdf(input: DavomatShiftPdfInput): Promis
   };
 
   d.page.drawRectangle({ x: 0, y: PAGE_H - 78, width: PAGE_W, height: 78, color: NAVY });
-  d.page.drawText("AMIR FARM HR", { x: M, y: PAGE_H - 22, size: 9, font: bold, color: rgb(0.73, 0.85, 0.95) });
+  d.page.drawText("AMIR PHARMACY HR", { x: M, y: PAGE_H - 22, size: 9, font: bold, color: rgb(0.73, 0.85, 0.95) });
   const title =
     input.title || (input.updated ? "Davomat · yangilangan hisobot" : "Davomat · ogohlantirish hisoboti");
   d.page.drawText(title, { x: M, y: PAGE_H - 42, size: 16, font: bold, color: PAPER });

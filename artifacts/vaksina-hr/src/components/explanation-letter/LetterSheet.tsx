@@ -152,8 +152,8 @@ export function LetterSheet({ content: c, qrPng, signaturePng, reasonDraft, high
           </div>
           <div className="mt-6 border-t border-slate-200 pt-2 text-center text-[10px] text-slate-400">
             {c.footer.signedAt
-              ? `Elektron imzolangan: ${c.footer.signedAt} (Toshkent vaqti) · Hujjat № ${c.letterNo} · AMIR FARM HR platformasi`
-              : `Hujjat № ${c.letterNo} · AMIR FARM HR platformasi · imzolanmagan`}
+              ? `Elektron imzolangan: ${c.footer.signedAt} (Toshkent vaqti) · Hujjat № ${c.letterNo} · AMIR PHARMACY HR platformasi`
+              : `Hujjat № ${c.letterNo} · AMIR PHARMACY HR platformasi · imzolanmagan`}
           </div>
         </div>
       </div>

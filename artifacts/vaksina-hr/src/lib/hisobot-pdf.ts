@@ -88,7 +88,7 @@ export async function downloadHisobotPdf(report: CoordinatorHisobot) {
     let y = 32;
     ctx.fillStyle = "#0b3a5c";
     ctx.font = `bold 16px ${FONT}`;
-    ctx.fillText("AMIR FARM", marginX, y);
+    ctx.fillText("AMIR PHARMACY", marginX, y);
     ctx.fillStyle = "#64748b";
     ctx.font = `11px ${FONT}`;
     ctx.fillText("Koordinator hisobot", marginX + 118, y);
@@ -639,7 +639,7 @@ export async function downloadAbsentHisobotPdf(opts: {
   const footer = () => {
     ctx.fillStyle = "#94a3b8";
     ctx.font = `10px ${FONT}`;
-    ctx.fillText("AMIR FARM HR · tanlangan sana davomati", marginX, H - 16);
+    ctx.fillText("AMIR PHARMACY HR · tanlangan sana davomati", marginX, H - 16);
     ctx.textAlign = "right";
     ctx.fillText(String(pageNo), W - marginX, H - 16);
     ctx.textAlign = "left";

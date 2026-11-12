@@ -1,5 +1,5 @@
 /**
- * Amir Farm lokatsiya bot — zamonaviy brendlangan QR poster (PNG / PDF).
+ * Amir Pharmacy lokatsiya bot — zamonaviy brendlangan QR poster (PNG / PDF).
  * Oddiy qora-oq emas: gradient nuqtalar, yumaloq ko‘zlar, logo markazda.
  * To‘liq poster: header + QR + @username + skaner matni.
  */
@@ -117,7 +117,7 @@ export async function renderLokatsiyaBotQrPoster(
   ctx.font = `800 ${Math.round(W * 0.052)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  ctx.fillText("AMIR FARM", W / 2, y);
+  ctx.fillText("AMIR PHARMACY", W / 2, y);
   y += W * 0.06;
 
   ctx.fillStyle = "rgba(255,255,255,0.85)";
@@ -246,12 +246,12 @@ export async function lokatsiyaBotQrPngDataUrl(size = 1080): Promise<string> {
   return canvas.toDataURL("image/png");
 }
 
-export async function downloadLokatsiyaBotQrPng(filename = "amir-farm-lokatsiya-bot-qr.png") {
+export async function downloadLokatsiyaBotQrPng(filename = "amir-pharmacy-lokatsiya-bot-qr.png") {
   const url = await lokatsiyaBotQrPngDataUrl(1400);
   downloadDataUrl(url, filename);
 }
 
-export async function downloadLokatsiyaBotQrPdf(filename = "amir-farm-lokatsiya-bot-qr.pdf") {
+export async function downloadLokatsiyaBotQrPdf(filename = "amir-pharmacy-lokatsiya-bot-qr.pdf") {
   const png = await lokatsiyaBotQrPngDataUrl(1400);
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageW = 210;

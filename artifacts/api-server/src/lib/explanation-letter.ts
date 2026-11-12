@@ -847,7 +847,7 @@ export function letterContent(
       final
         ? "Menga nisbatan kompaniyaning ichki tartib qoidalarida belgilangan jarimalar hamda rahbariyat tomonidan tayinlanadigan intizomiy jazolar qo‘llanilishiga roziman va e’tirozim yo‘q."
         : "Ushbu holat qayta takrorlansa, menga nisbatan quyidagi bosqichlarda ko‘rsatilgan jarimalar hamda rahbariyat tomonidan tayinlanadigan intizomiy jazo (hayfsan, jarima, mehnat shartnomasini bekor qilish) qo‘llanilishiga roziman va e’tirozim yo‘q.",
-      "Ushbu tushuntirish xatini AMIR FARM HR platformasida to‘liq o‘qib, mazmuni bilan tanishib chiqdim va rozilik bildirgan holda o‘z imzom bilan tasdiqlayman. Undagi barcha ma’lumotlar to‘g‘ri.",
+      "Ushbu tushuntirish xatini AMIR PHARMACY HR platformasida to‘liq o‘qib, mazmuni bilan tanishib chiqdim va rozilik bildirgan holda o‘z imzom bilan tasdiqlayman. Undagi barcha ma’lumotlar to‘g‘ri.",
     ],
     stages: LETTER_STAGES,
     stage: Math.min(n, FINAL_STRIKE),

@@ -718,7 +718,7 @@ router.get("/employees/export", requireAuth, async (req: AuthRequest, res): Prom
   if (String(req.query.format || "").toLowerCase() === "json") {
     res.setHeader("Cache-Control", "no-store");
     res.json({
-      title: "AMIR FARM — Xodimlar ro‘yxati",
+      title: "AMIR PHARMACY — Xodimlar ro‘yxati",
       generatedAt: new Date().toISOString(),
       stamp,
       total: exportRows.length,
@@ -742,7 +742,7 @@ router.get("/employees/export", requireAuth, async (req: AuthRequest, res): Prom
   }
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "AMIR FARM HR";
+  workbook.creator = "AMIR PHARMACY HR";
   workbook.created = new Date();
 
   const colCount = 11;
@@ -754,7 +754,7 @@ router.get("/employees/export", requireAuth, async (req: AuthRequest, res): Prom
 
   sheet.mergeCells(`A1:${lastCol}1`);
   const title = sheet.getCell("A1");
-  title.value = "AMIR FARM — Xodimlar ro‘yxati";
+  title.value = "AMIR PHARMACY — Xodimlar ro‘yxati";
   title.font = { name: "Calibri", size: 15, bold: true, color: { argb: "FFFFFFFF" } };
   title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
   title.alignment = { vertical: "middle", horizontal: "left", indent: 1 };

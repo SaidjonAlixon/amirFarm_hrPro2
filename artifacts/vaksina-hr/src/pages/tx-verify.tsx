@@ -36,7 +36,7 @@ export default function TxVerifyPage() {
         <div className="flex items-center gap-3 bg-[#0b3a5c] px-5 py-4 text-white">
           <FileSignature className="h-6 w-6" />
           <div>
-            <p className="text-sm font-bold">AMIR FARM HR · Hujjat tekshiruvi</p>
+            <p className="text-sm font-bold">AMIR PHARMACY HR · Hujjat tekshiruvi</p>
             <p className="text-[11px] text-white/70">«VAKSINA HEALTHCARE» MChJ</p>
           </div>
         </div>
@@ -57,7 +57,7 @@ export default function TxVerifyPage() {
                   icon={CheckCircle2}
                   tone="text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10"
                   title="Hujjat haqiqiy"
-                  text="Tushuntirish xati AMIR FARM HR platformasida xodim tomonidan elektron imzolangan."
+                  text="Tushuntirish xati AMIR PHARMACY HR platformasida xodim tomonidan elektron imzolangan."
                 />
               ) : (
                 <Verdict

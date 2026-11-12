@@ -203,7 +203,7 @@ const TZ_OFFSET = "+05:00"; // Asia/Tashkent
 export const DAVOMAT_GEOFENCE_METERS = 70;
 /** Asosiy ofis — yashil zona 100 m */
 export const DAVOMAT_OFFICE_GEOFENCE_METERS = 100;
-/** Asosiy ofis — AMIR FARM: 41°21'06.1"N 69°23'06.4"E */
+/** Asosiy ofis — AMIR PHARMACY: 41°21'06.1"N 69°23'06.4"E */
 export const DAVOMAT_SITE_LAT = 41 + 21 / 60 + 6.1 / 3600; // ≈ 41.351694
 export const DAVOMAT_SITE_LNG = 69 + 23 / 60 + 6.4 / 3600; // ≈ 69.385111
 export const DAVOMAT_SITE_LABEL = "41°21'06.1\"N 69°23'06.4\"E";
@@ -6051,7 +6051,7 @@ router.get("/davomat/export", requireAuth, async (req: AuthRequest, res): Promis
     );
 
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = "AMIR FARM HR";
+    workbook.creator = "AMIR PHARMACY HR";
     workbook.created = new Date();
     const filterNote = [
       `Davr: ${from} — ${to}`,
@@ -6144,7 +6144,7 @@ router.get("/davomat/export", requireAuth, async (req: AuthRequest, res): Promis
     const sGuide = workbook.addWorksheet("Qo'llanma");
     sGuide.mergeCells("A1:D1");
     const gTitle = sGuide.getCell("A1");
-    gTitle.value = "AMIR FARM — Davomat hisoboti qo'llanmasi";
+    gTitle.value = "AMIR PHARMACY — Davomat hisoboti qo'llanmasi";
     gTitle.font = { name: "Calibri", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
     gTitle.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
     gTitle.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
@@ -6205,7 +6205,7 @@ router.get("/davomat/export", requireAuth, async (req: AuthRequest, res): Promis
     });
     sGrid.mergeCells(1, 1, 1, Math.max(lastCol, 7));
     const tGrid = sGrid.getCell("A1");
-    tGrid.value = `AMIR FARM — Davomat jadvali (${from} — ${to}) · ${dates.length} kun`;
+    tGrid.value = `AMIR PHARMACY — Davomat jadvali (${from} — ${to}) · ${dates.length} kun`;
     tGrid.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
     tGrid.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
     tGrid.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
@@ -6373,7 +6373,7 @@ router.get("/davomat/export", requireAuth, async (req: AuthRequest, res): Promis
     });
     s1.mergeCells("A1:F1");
     const t1 = s1.getCell("A1");
-    t1.value = `AMIR FARM — Kunlik xulosa (${from} — ${to}) · Har xodim o‘z smenasiga qarab hisoblanadi`;
+    t1.value = `AMIR PHARMACY — Kunlik xulosa (${from} — ${to}) · Har xodim o‘z smenasiga qarab hisoblanadi`;
     t1.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
     t1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
     t1.alignment = { vertical: "middle", horizontal: "left", indent: 1 };

@@ -185,7 +185,7 @@ export default function Login() {
       <div className="flex w-full max-w-md flex-col items-center gap-5">
         <img
           src={`${import.meta.env.BASE_URL}amirfarm-logo.png`}
-          alt="AMIR FARM HR"
+          alt="AMIR PHARMACY HR"
           width={1200}
           height={360}
           decoding="async"

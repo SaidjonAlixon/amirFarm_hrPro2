@@ -156,7 +156,7 @@ export async function exportJarimaPdf(input: {
     ctx.fillText(`Jarima — ${input.filterLabel}`, margin * scale, 7.2 * scale);
     ctx.font = `${Math.round(2.6 * scale)}px ${FONT}`;
     ctx.fillStyle = "#fecdd3";
-    ctx.fillText("AMIR FARM HR", margin * scale, 12.2 * scale);
+    ctx.fillText("AMIR PHARMACY HR", margin * scale, 12.2 * scale);
     ctx.textAlign = "right";
     ctx.fillStyle = "#ffffff";
     ctx.fillText(`${stampNow()}  ·  ${page + 1}-list`, (pageW - margin) * scale, 8 * scale);
@@ -223,7 +223,7 @@ export async function exportJarimaPdf(input: {
 
     ctx.fillStyle = "#94a3b8";
     ctx.font = `${Math.round(2.3 * scale)}px ${FONT}`;
-    ctx.fillText("Jarima hisoboti · AMIR FARM HR", margin * scale, (pageH - 3.5) * scale);
+    ctx.fillText("Jarima hisoboti · AMIR PHARMACY HR", margin * scale, (pageH - 3.5) * scale);
     doc.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pageW, pageH);
     page += 1;
     if (input.lines.length === 0) break;

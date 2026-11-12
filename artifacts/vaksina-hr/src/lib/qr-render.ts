@@ -150,7 +150,7 @@ function drawQrPage(
     meta?: string;
   },
 ) {
-  const { png, title, subtitle = "AMIR FARM · Davomat QR", meta } = opts;
+  const { png, title, subtitle = "AMIR PHARMACY · Davomat QR", meta } = opts;
   const cx = PAGE_W / 2;
   let y = 22;
   const maxTextW = PAGE_W - 28;

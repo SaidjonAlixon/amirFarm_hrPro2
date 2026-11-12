@@ -115,10 +115,10 @@ router.post("/telegram-filial/setup", async (req: Request, res: Response): Promi
       { command: "id", description: "Telegram ID" },
     ]);
     try {
-      await filialSetMyName("Amir Farm lokatsiya");
+      await filialSetMyName("Amir Pharmacy lokatsiya");
       await filialSetMyShortDescription("Filial lokatsiyasi, tuman kesimi, rekruter monitoring");
       await filialSetMyDescription(
-        "Amir Farm lokatsiya — filial, tuman kesimi, bog‘lanish. Rekruterlar uchun xodim ehtiyoji monitoring.",
+        "Amir Pharmacy lokatsiya — filial, tuman kesimi, bog‘lanish. Rekruterlar uchun xodim ehtiyoji monitoring.",
       );
     } catch {
       /* nom ixtiyoriy */

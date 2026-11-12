@@ -154,7 +154,7 @@ type Draw = {
 };
 
 function footer(d: Draw) {
-  d.page.drawText(`AMIR FARM HR  ·  Intizom hisoboti  ·  ${d.pageNo}-sahifa  ·  Maxfiy — ${d.audience}`, {
+  d.page.drawText(`AMIR PHARMACY HR  ·  Intizom hisoboti  ·  ${d.pageNo}-sahifa  ·  Maxfiy — ${d.audience}`, {
     x: M,
     y: 16,
     size: 7.5,
@@ -507,14 +507,14 @@ export async function renderDisciplinePdf(report: DisciplineReport, opts: Discip
     y: PAGE_H,
     pageNo: 1,
     headLine: coord
-      ? `AMIR FARM HR  ·  Intizom hisoboti  ·  ${coord} xodimlari  ·  ${monthTitle(report.month)}  ·  ${generated}`
-      : `AMIR FARM HR  ·  Intizom hisoboti  ·  ${monthTitle(report.month)}  ·  ${generated}`,
+      ? `AMIR PHARMACY HR  ·  Intizom hisoboti  ·  ${coord} xodimlari  ·  ${monthTitle(report.month)}  ·  ${generated}`
+      : `AMIR PHARMACY HR  ·  Intizom hisoboti  ·  ${monthTitle(report.month)}  ·  ${generated}`,
     audience: coord ? `faqat koordinator ${coord} uchun` : "faqat rahbariyat uchun",
   };
   const width = PAGE_W - M * 2;
 
   d.page.drawRectangle({ x: 0, y: PAGE_H - 84, width: PAGE_W, height: 84, color: NAVY });
-  d.page.drawText("AMIR FARM HR  ·  MAXFIY", { x: M, y: PAGE_H - 22, size: 9, font: bold, color: rgb(0.73, 0.85, 0.95) });
+  d.page.drawText("AMIR PHARMACY HR  ·  MAXFIY", { x: M, y: PAGE_H - 22, size: 9, font: bold, color: rgb(0.73, 0.85, 0.95) });
   d.page.drawText(coord ? "Intizom hisoboti — sizning xodimlaringiz" : "Intizom hisoboti — davomat jarimalari", {
     x: M,
     y: PAGE_H - 44,

@@ -119,7 +119,7 @@ router.get("/dept-staff/export", requireAuth, async (req: AuthRequest, res): Pro
     const workbook = newCredWorkbook();
     paintCredSheet(workbook, {
       name: "Xodimlar",
-      title: `AMIR FARM — ${ctx.departmentName} · login/parol · ${unique.length} ta`,
+      title: `AMIR PHARMACY — ${ctx.departmentName} · login/parol · ${unique.length} ta`,
       headers: ["F.I.Sh.", "Lavozim", "Rol", "Login", "Parol", "Telefon", "Holat"],
       widths: [32, 22, 20, 24, 14, 16, 12],
       rows: unique.map((r) => [

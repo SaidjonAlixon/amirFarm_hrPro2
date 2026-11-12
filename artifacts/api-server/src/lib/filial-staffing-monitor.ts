@@ -341,7 +341,7 @@ export function buildStaffingMonitorCaption(
 ): string {
   const maxItems = opts?.maxItems ?? 15;
   const lines: string[] = [
-    "📊 <b>Amir Farm — xodim ehtiyoji (jonli)</b>",
+    "📊 <b>AMIR PHARMACY — xodim ehtiyoji (jonli)</b>",
     `<i>${esc(report.generatedAtLabel)} (Toshkent)</i>`,
     "",
     `🔴 <b>Jami kerak:</b> ${report.totalNeeds}`,

@@ -253,7 +253,7 @@ export async function renderExplanationLetterPdf(
   doc.setTitle(`Tushuntirish xati ${c.letterNo}`);
   doc.setAuthor(c.sender.fullName);
   doc.setSubject(c.final ? `${c.kindLabel} — oxirgi ogohlantirish` : c.kindLabel);
-  doc.setProducer("AMIR FARM HR");
+  doc.setProducer("AMIR PHARMACY HR");
 
   const qrBytes = dataUrlBytes(images.qr);
   const sigBytes = dataUrlBytes(images.signature);
@@ -320,8 +320,8 @@ export async function renderExplanationLetterPdf(
   }
 
   const meta = c.footer.signedAt
-    ? `Elektron imzolangan: ${c.footer.signedAt} (Toshkent vaqti) · Hujjat № ${c.letterNo} · AMIR FARM HR platformasi`
-    : `Hujjat № ${c.letterNo} · imzolanmagan nusxa · AMIR FARM HR platformasi`;
+    ? `Elektron imzolangan: ${c.footer.signedAt} (Toshkent vaqti) · Hujjat № ${c.letterNo} · AMIR PHARMACY HR platformasi`
+    : `Hujjat № ${c.letterNo} · imzolanmagan nusxa · AMIR PHARMACY HR platformasi`;
   const mw = fonts.regular.widthOfTextAtSize(meta, 7);
   page.drawLine({ start: { x: ML, y: 42 }, end: { x: W - MR, y: 42 }, thickness: 0.4, color: HAIR });
   page.drawText(meta, { x: (W - mw) / 2, y: 30, size: 7, font: fonts.regular, color: MUTED });

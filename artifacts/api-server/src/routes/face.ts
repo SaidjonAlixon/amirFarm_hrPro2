@@ -577,7 +577,7 @@ router.get("/admin/faces/export", requireAuth, async (req: AuthRequest, res): Pr
   const withPhoto = filtered.filter((f) => Boolean(f.photoUrl)).length;
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "AMIR FARM HR";
+  workbook.creator = "AMIR PHARMACY HR";
   workbook.created = new Date();
 
   const sheet = workbook.addWorksheet("Face ID", {
@@ -587,7 +587,7 @@ router.get("/admin/faces/export", requireAuth, async (req: AuthRequest, res): Pr
 
   sheet.mergeCells("A1:G1");
   const title = sheet.getCell("A1");
-  title.value = "AMIR FARM — Face ID ro‘yxati";
+  title.value = "AMIR PHARMACY — Face ID ro‘yxati";
   title.font = { name: "Calibri", size: 16, bold: true, color: { argb: "FFFFFFFF" } };
   title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
   title.alignment = { vertical: "middle", horizontal: "left", indent: 1 };

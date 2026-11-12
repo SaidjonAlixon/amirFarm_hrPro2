@@ -332,7 +332,7 @@ export async function downloadEmployeesPdf(
     ctx.fillStyle = "#94a3b8";
     ctx.font = `9px ${FONT}`;
     ctx.fillText(
-      "AMIR FARM HR · Kitob format · №…Koordinator · Excel bilan bir xil ma’lumot",
+      "AMIR PHARMACY HR · Kitob format · №…Koordinator · Excel bilan bir xil ma’lumot",
       x0,
       pageH - mmToPx(4),
     );

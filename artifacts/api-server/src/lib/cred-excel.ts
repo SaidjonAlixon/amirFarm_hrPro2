@@ -67,7 +67,7 @@ export async function sendWorkbook(res: Response, workbook: ExcelJS.Workbook, fi
 
 export function newCredWorkbook() {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "AMIR FARM HR";
+  workbook.creator = "AMIR PHARMACY HR";
   workbook.created = new Date();
   return workbook;
 }

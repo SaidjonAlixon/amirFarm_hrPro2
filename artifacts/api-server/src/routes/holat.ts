@@ -94,11 +94,11 @@ function addRows(sheet: ExcelJS.Worksheet, rows: Array<Array<string | number | n
 
 async function holatWorkbook(report: HolatReport) {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "AMIR FARM HR";
+  wb.creator = "AMIR PHARMACY HR";
   wb.created = new Date();
 
   const s0 = wb.addWorksheet("Sonlar");
-  navyTitle(s0, 3, `AMIR FARM — Holat · ${report.generatedAt}`);
+  navyTitle(s0, 3, `AMIR PHARMACY — Holat · ${report.generatedAt}`);
   headerRow(s0, ["Ko‘rsatkich", "Son", "Manba"]);
   s0.columns = [{ width: 42 }, { width: 12 }, { width: 55 }];
   addRows(s0, [

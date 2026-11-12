@@ -347,7 +347,7 @@ function exportDayPdf(input: DavomatPdfExportInput): Promise<void> {
 
     ctx.fillStyle = "#94a3b8";
     ctx.font = `9px ${FONT}`;
-    ctx.fillText("AMIR FARM HR · Davomat hisobot", x0, H - mmToPx(6));
+    ctx.fillText("AMIR PHARMACY HR · Davomat hisobot", x0, H - mmToPx(6));
 
     pages.push(canvas);
     if (rows.length === 0) break;
@@ -498,7 +498,7 @@ function exportPeriodPdf(input: DavomatPdfExportInput): Promise<void> {
       ctx.fillStyle = "#94a3b8";
       ctx.font = `9px ${FONT}`;
       ctx.fillText(
-        "AMIR FARM HR · Yashil=Kelgan · Sariq=Kech · Qizil=Kelmagan · Binafsha=Ta’til",
+        "AMIR PHARMACY HR · Yashil=Kelgan · Sariq=Kech · Qizil=Kelmagan · Binafsha=Ta’til",
         x0,
         H - mmToPx(5),
       );

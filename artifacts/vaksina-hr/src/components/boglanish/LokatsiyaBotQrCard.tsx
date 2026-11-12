@@ -119,7 +119,7 @@ export default function LokatsiyaBotQrCard({ className, compact }: Props) {
             {preview ? (
               <img
                 src={preview}
-                alt="Amir Farm lokatsiya bot QR"
+                alt="Amir Pharmacy lokatsiya bot QR"
                 className="aspect-[100/128] w-full rounded-xl object-cover"
                 draggable={false}
               />

@@ -194,7 +194,7 @@ function listText(branches: FilialBranchCard[], page: number, firstName: string)
   return [
     `👋 <b>Xush kelibsiz, ${esc(firstName)}!</b>`,
     "",
-    "🏢 <b>Amir Farm lokatsiya</b>",
+    "🏢 <b>Amir Pharmacy lokatsiya</b>",
     "Filial nomi, raqam, ish vaqti va joylashuv.",
     "",
     "Filialni tanlang:",
@@ -1358,7 +1358,7 @@ export async function handleFilialBotUpdate(update: FilialTelegramUpdate): Promi
       await filialSendMessage(
         chatId,
         [
-          "🛠 <b>Amir Farm lokatsiya — Admin</b>",
+          "🛠 <b>Amir Pharmacy lokatsiya — Admin</b>",
           "",
           "Pastdagi tugmalar:",
           `• ${BTN_USERS} — jonli matn + Excel`,
@@ -1378,7 +1378,7 @@ export async function handleFilialBotUpdate(update: FilialTelegramUpdate): Promi
     if (cmd === "/yordam" || cmd === "/help") {
       await trackUser(user, chatId, { action: "help" });
       const lines = [
-        "ℹ️ <b>Amir Farm lokatsiya bot</b>",
+        "ℹ️ <b>Amir Pharmacy lokatsiya bot</b>",
         "",
         "• /start — filiallar ro‘yxati",
         "• 📍 Eng yaqin filial — joyingizni yuboring, eng yaqin 3 ta chiqadi",

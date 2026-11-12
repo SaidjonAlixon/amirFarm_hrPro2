@@ -172,8 +172,8 @@ async function aiShortOrPhoto(
   const contactPhrase = contactsReply(locale);
   const langLine =
     locale === "ru"
-      ? "You are AMIR FARM HR assistant. Reply in Russian, short (2-5 sentences)."
-      : "Siz AMIR FARM HR yordamchisisiz. O‘zbekcha, qisqa (2–5 jumla).";
+      ? "You are AMIR PHARMACY HR assistant. Reply in Russian, short (2-5 sentences)."
+      : "Siz AMIR PHARMACY HR yordamchisisiz. O‘zbekcha, qisqa (2–5 jumla).";
   const parsed = await openaiJson({
     maxTokens: 220,
     messages: [
@@ -211,16 +211,16 @@ async function aiVisionAnswer(
   const contactPhrase = contactsReply(locale);
   const offTopicLead =
     locale === "ru"
-      ? "Это не скриншот платформы AMIR FARM HR (похоже на Telegram/другой мессенджер или внешнее приложение)."
-      : "Bu AMIR FARM HR platformasi skrinshoti emas (Telegram yoki boshqa dasturga o‘xshaydi).";
+      ? "Это не скриншот платформы AMIR PHARMACY HR (похоже на Telegram/другой мессенджер или внешнее приложение)."
+      : "Bu AMIR PHARMACY HR platformasi skrinshoti emas (Telegram yoki boshqa dasturga o‘xshaydi).";
   const askPlatformShot =
     locale === "ru"
       ? "Пришлите скриншот именно из веб/приложения платформы (ошибка, Face ID, посещаемость и т.д.)."
       : "Platformaning o‘zidan skrinshot yuboring (xato, Face ID, davomat va hokazo).";
   const langLine =
     locale === "ru"
-      ? "AMIR FARM HR helper. Short Russian reply (2-6 sentences)."
-      : "AMIR FARM HR yordamchi. Qisqa o‘zbekcha javob (2–6 jumla).";
+      ? "AMIR PHARMACY HR helper. Short Russian reply (2-6 sentences)."
+      : "AMIR PHARMACY HR yordamchi. Qisqa o‘zbekcha javob (2–6 jumla).";
   const parsed = await openaiJson({
     maxTokens: 320,
     messages: [
@@ -229,7 +229,7 @@ async function aiVisionAnswer(
         content: [
           langLine,
           "First classify the image:",
-          "- PLATFORM: UI of AMIR FARM HR / vaksinahr (login, dashboard, Face ID enroll, davomat, checklist, menus of this HR app).",
+          "- PLATFORM: UI of AMIR PHARMACY HR / vaksinahr (login, dashboard, Face ID enroll, davomat, checklist, menus of this HR app).",
           "- OFF_TOPIC: Telegram, WhatsApp, Instagram, phone home screen, unrelated websites/apps, chat lists, messengers.",
           "If OFF_TOPIC: action=off_topic. reply MUST: (1) clearly say it is NOT a platform screenshot, (2) briefly describe what you see if useful, (3) answer the user question using Facts catalog about the REAL platform, (4) ask for a screenshot from the platform itself.",
           "If PLATFORM: action=answer with concrete help from the image + Facts. Do not invent.",
@@ -257,7 +257,7 @@ async function aiVisionAnswer(
     raw === "contacts" || raw === "off_topic" ? raw : "answer";
   let reply = String(parsed.reply || "").trim().slice(0, 1200);
   if (!reply) return null;
-  if (action === "off_topic" && !/platform|AMIR FARM|VAKSINA|vaksinahr|Telegram|мессенджер|dastur/i.test(reply)) {
+  if (action === "off_topic" && !/platform|AMIR PHARMACY|AMIR FARM|VAKSINA|vaksinahr|Telegram|мессенджер|dastur/i.test(reply)) {
     const faqHint = matchHelpFaq(question || "");
     const extra = faqHint
       ? `\n\n${faqAnswer(faqHint.faq, locale)}`

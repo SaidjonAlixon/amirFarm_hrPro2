@@ -167,7 +167,7 @@
   }
 }
 
-/* AMIR FARM — yorug‘ rejimda oq/ko‘k, tungi rejimda to‘q ko‘k yon menyu */
+/* AMIR PHARMACY — yorug‘ rejimda oq/ko‘k, tungi rejimda to‘q ko‘k yon menyu */
 .app-sidebar {
   color: #0f172a;
   background:
@@ -311,7 +311,7 @@
     inset 0 1px 0 rgb(255 255 255 / 0.35);
 }
 
-/* Har bo‘lim o‘z rangida — Amir Farm ko‘k palitrasi */
+/* Har bo‘lim o‘z rangida — AMIR PHARMACY ko‘k palitrasi */
 .app-sidebar-section:nth-child(6n + 2) .app-sidebar-section-icon {
   --af-icon-from: #22d3ee;
   --af-icon-to: #0891b2;

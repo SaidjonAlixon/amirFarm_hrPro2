@@ -1,4 +1,4 @@
-/* AMIR FARM HR — Web Push + GPS keepalive service worker */
+/* AMIR PHARMACY HR — Web Push + GPS keepalive service worker */
 self.addEventListener("install", (event) => {
   self.skipWaiting();
 });
@@ -26,7 +26,7 @@ self.addEventListener("message", (event) => {
 });
 
 self.addEventListener("push", (event) => {
-  let data = { title: "AMIR FARM HR", body: "Yangi bildirishnoma", url: "/", tag: "vaksina-hr" };
+  let data = { title: "AMIR PHARMACY HR", body: "Yangi bildirishnoma", url: "/", tag: "vaksina-hr" };
   try {
     if (event.data) {
       const parsed = event.data.json();
@@ -41,7 +41,7 @@ self.addEventListener("push", (event) => {
 
   event.waitUntil(
     Promise.all([
-      self.registration.showNotification(data.title || "AMIR FARM HR", {
+      self.registration.showNotification(data.title || "AMIR PHARMACY HR", {
         body: data.body || "",
         icon: "/amirfarm-icon.png",
         badge: "/amirfarm-icon.png",

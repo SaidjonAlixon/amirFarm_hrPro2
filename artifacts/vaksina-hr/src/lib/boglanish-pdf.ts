@@ -99,7 +99,7 @@ export async function exportBoglanishPdf(
     ctx.fillText("Bog‘lanish — filiallar holati", margin * scale, 7.6 * scale);
     ctx.font = `${Math.round(2.6 * scale)}px ${FONT}`;
     ctx.fillStyle = "#dbeafe";
-    ctx.fillText(`AMIR FARM HR  ·  ${opts.filterLabel}`, margin * scale, 12.8 * scale);
+    ctx.fillText(`AMIR PHARMACY HR  ·  ${opts.filterLabel}`, margin * scale, 12.8 * scale);
     ctx.textAlign = "right";
     ctx.fillStyle = "#ffffff";
     ctx.fillText(`${stampNow()}  ·  ${page + 1}-list`, (pageW - margin) * scale, 8 * scale);
@@ -203,7 +203,7 @@ export async function exportBoglanishPdf(
 
     ctx.fillStyle = "#94a3b8";
     ctx.font = `${Math.round(2.3 * scale)}px ${FONT}`;
-    ctx.fillText("Maxfiy · faqat admin · AMIR FARM HR", margin * scale, (pageH - 4) * scale);
+    ctx.fillText("Maxfiy · faqat admin · AMIR PHARMACY HR", margin * scale, (pageH - 4) * scale);
 
     doc.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pageW, pageH);
     page += 1;

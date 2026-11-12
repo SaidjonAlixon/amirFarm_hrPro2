@@ -35,7 +35,7 @@ export async function buildStaffingMonitorExcel(report: StaffingMonitorReport): 
   count: number;
 }> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Amir Farm lokatsiya";
+  wb.creator = "Amir Pharmacy lokatsiya";
   wb.created = report.generatedAt;
 
   // ── Sheet: Sarlavha ──
@@ -44,7 +44,7 @@ export async function buildStaffingMonitorExcel(report: StaffingMonitorReport): 
 
   cover.mergeCells("A1:D1");
   const t1 = cover.getCell("A1");
-  t1.value = "AMIR FARM — XODIM EHTIYOJI (JONLI)";
+  t1.value = "AMIR PHARMACY — XODIM EHTIYOJI (JONLI)";
   t1.font = { name: "Calibri", size: 18, bold: true, color: { argb: "FFFFFFFF" } };
   t1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0A2540" } };
   t1.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
@@ -267,7 +267,7 @@ export async function buildClosedStaffNeedExcel(report: ClosedStaffNeedReport): 
   const isFound = report.kind === "found";
   const title = isFound ? "TOPILGAN" : "TOPILMAGAN (RAD)";
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Amir Farm lokatsiya";
+  wb.creator = "Amir Pharmacy lokatsiya";
   wb.created = report.generatedAt;
 
   const sheet = wb.addWorksheet(isFound ? "Topilgan" : "Topilmagan");
@@ -312,7 +312,7 @@ export async function buildClosedStaffNeedExcel(report: ClosedStaffNeedReport): 
 
   sheet.mergeCells(1, 1, 1, headers.length);
   const titleCell = sheet.getCell(1, 1);
-  titleCell.value = `AMIR FARM — XODIM KERAK · ${title} · ${report.periodLabel} · ${report.generatedAtLabel}`;
+  titleCell.value = `AMIR PHARMACY — XODIM KERAK · ${title} · ${report.periodLabel} · ${report.generatedAtLabel}`;
   titleCell.font = { name: "Calibri", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
   titleCell.fill = {
     type: "pattern",

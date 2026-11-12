@@ -590,7 +590,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
         if (shownOsDavomatRef.current.has(n.id)) continue;
         shownOsDavomatRef.current.add(n.id);
         try {
-          new Notification("AMIR FARM HR — Davomat", {
+          new Notification("AMIR PHARMACY HR — Davomat", {
             body: String(n.text || "").replace(/(?:\s*[|·｜│]\s*)?gps:\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)?/gi, "").trim(),
             tag: `davomat-${n.id}`,
             requireInteraction: true,
@@ -2126,7 +2126,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
             <div className={cn('app-sidebar-logo-card min-w-0 flex-1', desktopCollapsed && 'md:hidden')}>
               <img
                 src={`${import.meta.env.BASE_URL}amirfarm-logo.png`}
-                alt="AMIR FARM HR"
+                alt="AMIR PHARMACY HR"
                 width={1200}
                 height={360}
                 decoding="async"

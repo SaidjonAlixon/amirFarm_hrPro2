@@ -177,7 +177,7 @@ async function ensureStickyNotification() {
       return;
     }
     const reg = await navigator.serviceWorker.ready;
-    await reg.showNotification("AMIR FARM · GPS kuzatuv", {
+    await reg.showNotification("AMIR PHARMACY · GPS kuzatuv", {
       body: "Lokatsiya orqa fonda ishlamoqda. Ilovani yopmang.",
       icon: "/amirfarm-icon.png",
       badge: "/amirfarm-icon.png",

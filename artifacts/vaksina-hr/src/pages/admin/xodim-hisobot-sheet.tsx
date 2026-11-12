@@ -110,7 +110,7 @@ function usePackedPages(atoms: FlowAtom[]) {
     const pageH = Math.max(measureMm("297mm"), 980);
     const headH = measureEl(
       "flex items-start justify-between gap-3 px-6 py-3",
-      `<div><p class="text-[10px] font-bold tracking-[0.16em]">AMIR FARM HR</p><p class="text-sm font-semibold">Shaxsiy ma'lumot · 07.09.2026 — 29.09.2026 · davomi</p></div><p class="shrink-0 rounded-full px-3 py-1 text-xs font-semibold">List 1 / 1</p>`,
+      `<div><p class="text-[10px] font-bold tracking-[0.16em]">AMIR PHARMACY HR</p><p class="text-sm font-semibold">Shaxsiy ma'lumot · 07.09.2026 — 29.09.2026 · davomi</p></div><p class="shrink-0 rounded-full px-3 py-1 text-xs font-semibold">List 1 / 1</p>`,
     );
     const footH = measureEl(
       "flex items-center justify-between border-t border-slate-200 px-6 py-2 text-[11px]",
@@ -226,7 +226,7 @@ function SheetPage({ index, total, title, children }: { index: number; total: nu
       <article data-hisobot-page className="flex min-h-[297mm] w-full flex-col bg-white text-slate-900">
         <header className="flex items-start justify-between gap-3 bg-[#0b3a5c] px-6 py-3 text-white">
           <div className="min-w-0">
-            <p className="text-[10px] font-bold tracking-[0.16em] text-sky-100">AMIR FARM HR</p>
+            <p className="text-[10px] font-bold tracking-[0.16em] text-sky-100">AMIR PHARMACY HR</p>
             <p className="text-sm font-semibold">{title}</p>
           </div>
           <p className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold">List {index} / {total}</p>
@@ -679,7 +679,7 @@ function buildAtoms(report: XodimReport, seal: XodimSealView | null | undefined,
             </div>
             <div className="grid h-32 w-32 place-items-center rounded-full border-[6px] border-double border-emerald-700 text-center text-emerald-700" style={{ transform: "rotate(-14deg)" }}>
               <div>
-                <p className="text-[10px] font-bold tracking-[0.2em]">AMIR FARM</p>
+                <p className="text-[10px] font-bold tracking-[0.2em]">AMIR PHARMACY</p>
                 <p className="text-sm font-black tracking-wide">TASDIQLANGAN</p>
                 <p className="text-[10px] font-semibold">HR</p>
               </div>

@@ -120,7 +120,7 @@ export async function notifyUser(opts: {
   if (opts.webPush !== false) {
     try {
       await sendWebPushToUser(opts.userId, {
-        title: opts.title || "AMIR FARM HR",
+        title: opts.title || "AMIR PHARMACY HR",
         body: text,
         url: opts.linkUrl || "/",
         tag: opts.type,

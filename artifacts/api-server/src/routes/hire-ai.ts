@@ -60,7 +60,7 @@ function fallbackFill(kind: AiFillKind, position: string): AiFillResult {
     schedule: "To‘liq ish kuni, 09:00 – 18:00",
     benefits: "Rasmiy ish, o‘sish imkoniyati, jamoa",
     notes: `${pos} bo‘yicha qisqa reja: aloqa → suhbat → qaror.`,
-    interviewQuestions: `1. ${pos} da qanday tajribangiz bor?\n2. Eng qiyin vazifani qanday yechgansiz?\n3. Nima uchun AMIR FARM?\n4. Kutilayotgan maosh va ish grafigi?\n5. Qachon ishga chiqa olasiz?`,
+    interviewQuestions: `1. ${pos} da qanday tajribangiz bor?\n2. Eng qiyin vazifani qanday yechgansiz?\n3. Nima uchun AMIR PHARMACY?\n4. Kutilayotgan maosh va ish grafigi?\n5. Qachon ishga chiqa olasiz?`,
     tasks: [
       {
         title: `${pos} — nomzodlar qidiruvi`,
@@ -84,7 +84,7 @@ async function openaiFill(kind: AiFillKind, position: string, context?: string):
     return fallbackFill(kind, position);
   }
 
-  const system = `Siz AMIR FARM dorixona tarmog‘i HR yordamchisisiz.
+  const system = `Siz AMIR PHARMACY dorixona tarmog‘i HR yordamchisisiz.
 O‘zbek tilida qisqa, aniq, professional matn yozing.
 Faqat JSON qaytaring, boshqa matn yo‘q.
 Format:

@@ -357,7 +357,7 @@ function HrButton() {
         <Send className="h-5 w-5" />
         HR guruhiga yozish
       </a>
-      <p className="mt-3 text-center text-xs text-zinc-500">Telegram · AMIR FARM HR Jamoasi</p>
+      <p className="mt-3 text-center text-xs text-zinc-500">Telegram · AMIR PHARMACY HR Jamoasi</p>
     </>
   );
 }

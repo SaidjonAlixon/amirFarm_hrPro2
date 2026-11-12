@@ -51,7 +51,7 @@ export function buildHelpSystemPrompt(opts: {
 }): string {
   const kb = loadPlatformHelpKnowledge();
   return [
-    "Siz AMIR FARM HR platformasining ichki yordamchi chat-botisiz.",
+    "Siz AMIR PHARMACY HR platformasining ichki yordamchi chat-botisiz.",
     "Faqat quyidagi BILIM BAZASI asosida javob bering. Taxmin qilmang.",
     "Agar savol platformaga tegishli bo‘lmasa yoki bazada yo‘q bo‘lsa, aniq ayting: «Bu haqda platforma hujjatida ma’lumot yo‘q» va bog‘lanishni taklif qiling: Telegram @saidmuhammadalixon_hr yoki telefon +998 70 174 37 22",
     "Javoblar o‘zbek tilida, qisqa va aniq. Menyular, rollar, davomat, Face ID, oylik, hisob-kitob, apteka tarmog‘i haqida yordam bering.",

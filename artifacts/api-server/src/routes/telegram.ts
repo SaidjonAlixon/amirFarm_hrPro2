@@ -222,7 +222,7 @@ function welcomeText(name?: string): string {
   return [
     `👋 <b>Xush kelibsiz${greet}!</b>`,
     ``,
-    `AMIR FARM HR Telegram botiga hush kelibsiz.`,
+    `AMIR PHARMACY HR Telegram botiga hush kelibsiz.`,
     `Davom etish uchun <b>login</b> va <b>parol</b>ni yuboring.`,
     ``,
     `<b>Namuna (1 qator):</b>`,
@@ -281,7 +281,7 @@ async function buildTelegramUsersExcel(): Promise<{
   const linked = rows.filter((r) => String(r.telegramId || "").trim().length > 0);
 
   const wb = new ExcelJS.Workbook();
-  wb.creator = "AMIR FARM HR Bot";
+  wb.creator = "AMIR PHARMACY HR Bot";
   wb.created = new Date();
   const sheet = wb.addWorksheet("Telegram foydalanuvchilar", {
     views: [{ state: "frozen", ySplit: 2 }],
@@ -289,7 +289,7 @@ async function buildTelegramUsersExcel(): Promise<{
 
   sheet.mergeCells("A1:I1");
   const title = sheet.getCell("A1");
-  title.value = `AMIR FARM — Telegram bot foydalanuvchilari · Jami: ${linked.length}`;
+  title.value = `AMIR PHARMACY — Telegram bot foydalanuvchilari · Jami: ${linked.length}`;
   title.font = { name: "Calibri", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
   title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B3A5C" } };
   title.alignment = { vertical: "middle", horizontal: "left", indent: 1 };

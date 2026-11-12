@@ -123,7 +123,7 @@ export function FilialHisobotDocument({
           >
             <header className="bg-[#0b3a5c] px-5 py-4 text-white">
               <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-100">
-                AMIR FARM HR · Filial hisoboti
+                AMIR PHARMACY HR · Filial hisoboti
               </p>
               <h3 className="mt-1 text-lg font-semibold">{report.filial.name}</h3>
               <p className="mt-0.5 text-xs text-sky-100">

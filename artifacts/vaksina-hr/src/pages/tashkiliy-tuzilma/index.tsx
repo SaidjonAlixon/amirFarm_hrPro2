@@ -1487,7 +1487,7 @@ export default function TashkiliyTuzilmaPage() {
       <div className="shrink-0 border-b border-border bg-white/95 px-4 py-3 sm:px-6">
         <div className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
           <Network className="h-3.5 w-3.5 text-[#0b3a5c]" />
-          AMIR FARM
+          AMIR PHARMACY
         </div>
         <h1 className="text-xl font-semibold tracking-tight text-[#0b3a5c] sm:text-2xl">{t("org.title")}</h1>
         <div className="mt-3 flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 text-[12px] font-medium sm:text-[13px]">

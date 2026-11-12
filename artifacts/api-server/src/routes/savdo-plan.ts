@@ -773,7 +773,7 @@ router.get("/savdo-plan/export", requireAuth, async (req: AuthRequest, res): Pro
     const emps = sheet.employees;
 
     const wb = new ExcelJS.Workbook();
-    wb.creator = "AMIR FARM HR";
+    wb.creator = "AMIR PHARMACY HR";
     const ws = wb.addWorksheet(`${branch.name}`.slice(0, 28) || "Savdo plan");
     const lastCol = emps.length + 8;
     ws.mergeCells(1, 1, 1, lastCol);

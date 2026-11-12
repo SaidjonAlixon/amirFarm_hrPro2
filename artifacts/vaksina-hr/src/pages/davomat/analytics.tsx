@@ -1930,7 +1930,7 @@ export function DavomatAnalyticsDashboard({
       const openings = data.branchOpenings ?? [];
 
       await downloadDavomatAnalyticsPdf({
-        title: `AMIR FARM — ${t("davomat.analyticsShort")}`,
+        title: `AMIR PHARMACY — ${t("davomat.analyticsShort")}`,
         subtitle: `${data.from} — ${data.to}`,
         filterLine: `${segLabel} · ${presetLabel} · ${user?.fullName || ""}`.trim(),
         fileBase: `davomat_dashboard_${segment}_${data.from}_${data.to}`,
