@@ -35,16 +35,6 @@ function roundRect(
   ctx.closePath();
 }
 
-function loadImage(src: string): Promise<HTMLImageElement | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = src;
-  });
-}
-
 function isFinderCell(row: number, col: number, size: number): boolean {
   const inTL = row < 7 && col < 7;
   const inTR = row < 7 && col >= size - 7;
@@ -80,7 +70,6 @@ function drawFinder(
  */
 export async function renderLokatsiyaBotQrPoster(
   width = 1080,
-  logoUrl = `${import.meta.env.BASE_URL}amirfarm-icon.png`,
 ): Promise<HTMLCanvasElement> {
   const W = Math.round(width);
   const H = Math.round(W * 1.28);
@@ -178,38 +167,6 @@ export async function renderLokatsiyaBotQrPoster(
   drawFinder(ctx, qrX, qrY, cell, moduleGrad);
   drawFinder(ctx, qrX + (n - 7) * cell, qrY, cell, moduleGrad);
   drawFinder(ctx, qrX, qrY + (n - 7) * cell, cell, moduleGrad);
-
-  const logo = await loadImage(logoUrl);
-  const badge = qrArea * 0.22;
-  const bx = qrX + (qrArea - badge) / 2;
-  const by = qrY + (qrArea - badge) / 2;
-
-  ctx.beginPath();
-  ctx.arc(bx + badge / 2, by + badge / 2, badge / 2 + cell * 0.35, 0, Math.PI * 2);
-  ctx.fillStyle = "#ffffff";
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.arc(bx + badge / 2, by + badge / 2, badge / 2 + cell * 0.12, 0, Math.PI * 2);
-  ctx.strokeStyle = "rgba(11,95,255,0.35)";
-  ctx.lineWidth = cell * 0.18;
-  ctx.stroke();
-
-  if (logo) {
-    const inset = badge * 0.14;
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(bx + badge / 2, by + badge / 2, badge / 2 - inset * 0.2, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.drawImage(logo, bx + inset, by + inset, badge - inset * 2, badge - inset * 2);
-    ctx.restore();
-  } else {
-    ctx.fillStyle = COLOR_BLUE;
-    ctx.font = `800 ${Math.round(badge * 0.28)}px "Segoe UI", Arial, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("AF", bx + badge / 2, by + badge / 2);
-  }
 
   // Footer — always inside canvas
   let footY = cardY + cardSize + W * 0.04;
